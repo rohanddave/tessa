@@ -1,0 +1,12 @@
+.DS_Store
+*.log
+
+# Docker volumes and local env
+.env
+
+# Go
+bin/
+dist/
+coverage.out
+services/*/tmp/
+
