@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	cfkafka "github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/config"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync"
 )
@@ -17,11 +17,11 @@ type Producer interface {
 
 type KafkaProducerAdapter struct {
 	config   config.KafkaConfig
-	producer *kafka.Producer
+	producer *cfkafka.Producer
 }
 
 func NewKafkaProducer(config config.KafkaConfig) Producer {
-	p, err := kafka.NewProducer(&kafka.ConfigMap{
+	p, err := cfkafka.NewProducer(&cfkafka.ConfigMap{
 		"bootstrap.servers": config.Brokers,
 	})
 	if err != nil {
@@ -70,8 +70,8 @@ func (p *KafkaProducerAdapter) Produce(event *sync.RepoEvent) error {
 		return err
 	}
 
-	return p.producer.Produce(&kafka.Message{
-		TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: kafka.PartitionAny},
+	return p.producer.Produce(&cfkafka.Message{
+		TopicPartition: cfkafka.TopicPartition{Topic: &topic, Partition: cfkafka.PartitionAny},
 		Key:            []byte(partitionKey),
 		Value:          value,
 	}, nil)

@@ -1,8 +1,12 @@
 FROM golang:1.24-alpine AS builder
 
+RUN apk add --no-cache build-base pkgconf
+
+ENV CGO_ENABLED=1
+
 WORKDIR /app
 
-COPY go.mod ./
+COPY go.mod go.sum ./
 COPY cmd ./cmd
 COPY internal ./internal
 
