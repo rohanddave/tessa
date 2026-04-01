@@ -1,0 +1,84 @@
+package kafka
+
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/config"
+	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync"
+)
+
+type Producer interface {
+	Produce(*sync.RepoEvent) error
+
+	Close()
+}
+
+type KafkaProducerAdapter struct {
+	config   config.KafkaConfig
+	producer *kafka.Producer
+}
+
+func NewKafkaProducer(config config.KafkaConfig) Producer {
+	p, err := kafka.NewProducer(&kafka.ConfigMap{
+		"bootstrap.servers": config.Brokers,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return &KafkaProducerAdapter{config: config, producer: p}
+}
+
+func (p *KafkaProducerAdapter) getTopic(event *sync.RepoEvent) (string, error) {
+	switch event.EventType {
+	case "repo.created", "repo.deleted":
+		return p.config.LifeCycleTopic, nil
+	case "repo.updated":
+		return p.config.EventsTopic, nil
+	default:
+		return "", fmt.Errorf("unsupported event type: %s", event.EventType)
+	}
+}
+
+func (p *KafkaProducerAdapter) getPartitionKey(event *sync.RepoEvent) (string, error) {
+	// Use repo URL as partition key to ensure events for the same repo go to the same partition
+	switch event.EventType {
+	case "repo.created", "repo.deleted":
+		return event.RepoURL, nil
+	case "repo.updated":
+		return event.RepoURL + ":" + event.Branch, nil
+	default:
+		return "", fmt.Errorf("unsupported event type: %s", event.EventType)
+	}
+}
+
+func (p *KafkaProducerAdapter) Produce(event *sync.RepoEvent) error {
+	// Implementation for producing Kafka messages
+	topic, err := p.getTopic(event)
+	if err != nil {
+		return err
+	}
+
+	partitionKey, err := p.getPartitionKey(event)
+	if err != nil {
+		return err
+	}
+
+	value, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+
+	return p.producer.Produce(&kafka.Message{
+		TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: kafka.PartitionAny},
+		Key:            []byte(partitionKey),
+		Value:          value,
+	}, nil)
+}
+
+func (p *KafkaProducerAdapter) Close() {
+	p.producer.Close()
+}
+
+type Consumer interface{}

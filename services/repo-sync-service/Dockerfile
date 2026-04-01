@@ -1,4 +1,4 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 WORKDIR /app
 
@@ -6,8 +6,8 @@ COPY go.mod ./
 COPY cmd ./cmd
 COPY internal ./internal
 
-RUN go build -o /bin/repo-sync-service-api ./cmd/api
-RUN go build -o /bin/repo-sync-service-consumer ./cmd/consumer
+RUN go build -tags musl -o /bin/repo-sync-service-api ./cmd/api
+RUN go build -tags musl -o /bin/repo-sync-service-consumer ./cmd/consumer
 
 FROM alpine:3.20
 

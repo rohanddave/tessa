@@ -13,7 +13,7 @@ import (
 
 func TestRegisterRepoEventAccepted(t *testing.T) {
 	cfg := config.Load()
-	router := NewRouter(cfg, kafka.NewDummyProducer(cfg.Kafka.EventsTopic), kafka.NewDummyProducer(cfg.Kafka.LifeCycleTopic))
+	router := NewRouter(cfg, kafka.NewDummyProducer())
 
 	body := map[string]string{
 		"repo_url":     "https://github.com/example/repo.git",
@@ -40,7 +40,7 @@ func TestRegisterRepoEventAccepted(t *testing.T) {
 
 func TestRegisterRepoEventValidation(t *testing.T) {
 	cfg := config.Load()
-	router := NewRouter(cfg, kafka.NewDummyProducer(cfg.Kafka.EventsTopic), kafka.NewDummyProducer(cfg.Kafka.LifeCycleTopic))
+	router := NewRouter(cfg, kafka.NewDummyProducer())
 
 	body := map[string]string{
 		"repo_url":     "",

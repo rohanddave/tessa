@@ -35,13 +35,13 @@ type RepoEventRequest struct {
 
 type RepoEvent struct {
 	EventID     string    `json:"event_id"`
-	Status      string    `json:"status"`
+	// Status      string    `json:"status"`
 	RepoURL     string    `json:"repo_url"`
 	Provider    string    `json:"provider"`
 	Branch      string    `json:"branch"`
 	EventType   string    `json:"event_type"`
 	RequestedBy string    `json:"requested_by"`
-	Topic       string    `json:"topic"`
+	// Topic       string    `json:"topic"`
 	ReceivedAt  time.Time `json:"received_at"`
 }
 

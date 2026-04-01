@@ -13,16 +13,14 @@ import (
 )
 
 type handler struct {
-	config            config.Config
-	eventsproducer    kafka.Producer
-	lifecycleproducer kafka.Producer
+	config   config.Config
+	producer kafka.Producer
 }
 
-func NewRouter(cfg config.Config, eventsproducer kafka.Producer, lifecycleproducer kafka.Producer) http.Handler {
+func NewRouter(cfg config.Config, producer kafka.Producer) http.Handler {
 	h := handler{
-		config:            cfg,
-		eventsproducer:    eventsproducer,
-		lifecycleproducer: lifecycleproducer,
+		config:   cfg,
+		producer: producer,
 	}
 
 	mux := http.NewServeMux()
@@ -82,66 +80,18 @@ func (h handler) handleRepoEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	event := reposync.RepoEvent{
-		EventID:     fmt.Sprintf("evt_%d", time.Now().UnixNano()),
-		Status:      "accepted",
+		EventID: fmt.Sprintf("evt_%d", time.Now().UnixNano()),
+		// Status:      "accepted",
 		RepoURL:     strings.TrimSpace(req.RepoURL),
 		Provider:    strings.TrimSpace(req.Provider),
 		Branch:      defaultBranch(strings.TrimSpace(req.Branch)),
 		EventType:   strings.TrimSpace(req.EventType),
 		RequestedBy: strings.TrimSpace(req.RequestedBy),
-		Topic:       h.config.Kafka.LifeCycleTopic,
-		ReceivedAt:  time.Now().UTC(),
+		// Topic:       h.config.Kafka.LifeCycleTopic,
+		ReceivedAt: time.Now().UTC(),
 	}
 
-	switch event.EventType {
-	case "repo.updated":
-		h.handleRepoUpdatedEvent(w, r, event)
-	case "repo.created":
-		h.handleRepoCreatedEvent(w, r, event)
-	case "repo.deleted":
-		h.handleRepoDeletedEvent(w, r, event)
-	default:
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "unsupported event type",
-		})
-		return
-	}
-}
-
-func (h handler) handleRepoUpdatedEvent(w http.ResponseWriter, r *http.Request, event reposync.RepoEvent) {
-
-	if err := h.eventsproducer.PublishRepoUpdated(r.Context(), event); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": "failed to publish event",
-		})
-		return
-	}
-
-	writeJSON(w, http.StatusAccepted, event)
-}
-
-func (h handler) handleRepoCreatedEvent(w http.ResponseWriter, r *http.Request, event reposync.RepoEvent) {
-
-	if err := h.lifecycleproducer.PublishRepoCreated(r.Context(), event); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": "failed to publish event",
-		})
-		return
-	}
-
-	writeJSON(w, http.StatusAccepted, event)
-}
-
-func (h handler) handleRepoDeletedEvent(w http.ResponseWriter, r *http.Request, event reposync.RepoEvent) {
-
-	if err := h.lifecycleproducer.PublishRepoDeleted(r.Context(), event); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": "failed to publish event",
-		})
-		return
-	}
-
-	writeJSON(w, http.StatusAccepted, event)
+	h.producer.Produce(&event)
 }
 
 func defaultBranch(branch string) string {

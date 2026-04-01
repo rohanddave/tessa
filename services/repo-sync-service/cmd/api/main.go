@@ -29,11 +29,10 @@ func main() {
 		cfg.Storage.Endpoint,
 	)
 
-	eventsproducer := kafka.NewDummyProducer(cfg.Kafka.EventsTopic)
-	lifecycleproducer := kafka.NewDummyProducer(cfg.Kafka.LifeCycleTopic)
+	producer := kafka.NewKafkaProducer(cfg.Kafka)
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           httpapi.NewRouter(cfg, eventsproducer, lifecycleproducer),
+		Handler:           httpapi.NewRouter(cfg, producer),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

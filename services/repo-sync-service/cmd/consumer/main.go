@@ -7,7 +7,7 @@ import (
 	"syscall"
 
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/config"
-	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/kafka"
+	// "github.com/rohandave/tessa-rag/services/repo-sync-service/internal/kafka"
 )
 
 func main() {
@@ -15,13 +15,13 @@ func main() {
 
 	logger := log.New(os.Stdout, "", log.LstdFlags)
 	// TODO: update the topic for this consumer - lifecycle or events topic?
-	consumer := kafka.NewDummyConsumer(cfg.Kafka.EventsTopic)
+	// consumer := kafka.NewDummyConsumer()
 
 	logger.Printf(
-		"starting %s consumer with kafka=%s topic=%s",
+		"starting %s consumer with kafka=%s ",
 		cfg.ServiceName,
 		cfg.Kafka.Brokers,
-		consumer.Topic(),
+		// consumer.Topic(),
 	)
 	logger.Printf("consumer is a placeholder process for decoupled background work")
 
