@@ -3,6 +3,7 @@ package kafka
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	reposync "github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync"
 )
@@ -42,7 +43,7 @@ func (d *DummyConsumer) Close() {
 }
 
 // ReadMessage implements [Consumer].
-func (d *DummyConsumer) ReadMessage(timeout int) (*reposync.RepoEvent, error) {
+func (d *DummyConsumer) ReadMessage(timeout time.Duration) (*reposync.RepoEvent, error) {
 	panic("unimplemented")
 }
 

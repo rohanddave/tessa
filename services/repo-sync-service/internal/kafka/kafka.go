@@ -94,7 +94,7 @@ type KafkaConsumerConfig struct {
 type Consumer interface {
 	SubscribeTopics(topics []string) error
 
-	ReadMessage(timeout int) (*sync.RepoEvent, error)
+	ReadMessage(timeout time.Duration) (*sync.RepoEvent, error)
 
 	Close()
 }
@@ -120,9 +120,12 @@ func (c *KafkaConsumerAdapter) SubscribeTopics(topics []string) error {
 	return c.consumer.SubscribeTopics(topics, nil)
 }
 
-func (c *KafkaConsumerAdapter) ReadMessage(timeout int) (*sync.RepoEvent, error) {
-	msg, err := c.consumer.ReadMessage(time.Second * time.Duration(timeout))
+func (c *KafkaConsumerAdapter) ReadMessage(timeout time.Duration) (*sync.RepoEvent, error) {
+	msg, err := c.consumer.ReadMessage(timeout)
 	if err != nil {
+		if kafkaErr, ok := err.(cfkafka.Error); ok && kafkaErr.Code() == cfkafka.ErrTimedOut {
+			return nil, nil // No message received within timeout, return nil without error
+		}
 		return nil, err
 	}
 

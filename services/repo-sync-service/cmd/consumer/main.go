@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/config"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/kafka"
@@ -34,9 +35,13 @@ func main() {
 			defer consumer.Close()
 
 			for {
-				msg, err := consumer.ReadMessage(5)
+				msg, err := consumer.ReadMessage(5 * time.Second)
 				if err != nil {
 					logger.Printf("lifecycle consumer %d read error: %v", workerId, err)
+					continue
+				}
+
+				if msg == nil {
 					continue
 				}
 				logger.Printf("lifecycle consumer %d received message: %s", workerId, string(msg.RepoURL))
@@ -60,11 +65,16 @@ func main() {
 			defer consumer.Close()
 
 			for {
-				msg, err := consumer.ReadMessage(5)
+				msg, err := consumer.ReadMessage(5 * time.Second)
 				if err != nil {
 					logger.Printf("events consumer %d read error: %v", workerId, err)
 					continue
 				}
+
+				if msg == nil {
+					continue
+				}
+
 				logger.Printf("events consumer %d received message: %s", workerId, string(msg.RepoURL))
 			}
 		}(c, i)
