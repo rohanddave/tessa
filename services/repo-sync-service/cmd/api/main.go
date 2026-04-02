@@ -29,7 +29,11 @@ func main() {
 		cfg.Storage.Endpoint,
 	)
 
-	producer := kafka.NewKafkaProducer(cfg.Kafka)
+	producerCfg := &kafka.KafkaProducerConfig{
+		Brokers: cfg.Kafka.Brokers,
+	}
+
+	producer := kafka.NewKafkaProducer(producerCfg)
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           httpapi.NewRouter(cfg, producer),

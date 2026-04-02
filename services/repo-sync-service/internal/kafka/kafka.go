@@ -3,11 +3,16 @@ package kafka
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	cfkafka "github.com/confluentinc/confluent-kafka-go/v2/kafka"
-	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/config"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync"
+	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/util"
 )
+
+type KafkaProducerConfig struct {
+	Brokers string
+}
 
 type Producer interface {
 	Produce(*sync.RepoEvent) error
@@ -16,11 +21,11 @@ type Producer interface {
 }
 
 type KafkaProducerAdapter struct {
-	config   config.KafkaConfig
+	config   *KafkaProducerConfig
 	producer *cfkafka.Producer
 }
 
-func NewKafkaProducer(config config.KafkaConfig) Producer {
+func NewKafkaProducer(config *KafkaProducerConfig) Producer {
 	p, err := cfkafka.NewProducer(&cfkafka.ConfigMap{
 		"bootstrap.servers": config.Brokers,
 	})
@@ -33,9 +38,9 @@ func NewKafkaProducer(config config.KafkaConfig) Producer {
 func (p *KafkaProducerAdapter) getTopic(event *sync.RepoEvent) (string, error) {
 	switch event.EventType {
 	case "repo.created", "repo.deleted":
-		return p.config.LifeCycleTopic, nil
+		return util.EnvOrDefault("KAFKA_LIFE_CYCLE_TOPIC", "repo-sync.repo-lifecycle"), nil
 	case "repo.updated":
-		return p.config.EventsTopic, nil
+		return util.EnvOrDefault("KAFKA_EVENTS_TOPIC", "repo-sync.repo-events"), nil
 	default:
 		return "", fmt.Errorf("unsupported event type: %s", event.EventType)
 	}
@@ -81,4 +86,54 @@ func (p *KafkaProducerAdapter) Close() {
 	p.producer.Close()
 }
 
-type Consumer interface{}
+type KafkaConsumerConfig struct {
+	Brokers string
+	GroupId string
+}
+
+type Consumer interface {
+	SubscribeTopics(topics []string) error
+
+	ReadMessage(timeout int) (*sync.RepoEvent, error)
+
+	Close()
+}
+
+type KafkaConsumerAdapter struct {
+	config   *KafkaConsumerConfig
+	consumer *cfkafka.Consumer
+}
+
+func NewKafkaConsumer(config *KafkaConsumerConfig) Consumer {
+	c, err := cfkafka.NewConsumer(&cfkafka.ConfigMap{
+		"bootstrap.servers": config.Brokers,
+		"group.id":          config.GroupId,
+		"auto.offset.reset": "earliest",
+	})
+	if err != nil {
+		panic(err)
+	}
+	return &KafkaConsumerAdapter{config: config, consumer: c}
+}
+
+func (c *KafkaConsumerAdapter) SubscribeTopics(topics []string) error {
+	return c.consumer.SubscribeTopics(topics, nil)
+}
+
+func (c *KafkaConsumerAdapter) ReadMessage(timeout int) (*sync.RepoEvent, error) {
+	msg, err := c.consumer.ReadMessage(time.Second * time.Duration(timeout))
+	if err != nil {
+		return nil, err
+	}
+
+	var event sync.RepoEvent
+	if err := json.Unmarshal(msg.Value, &event); err != nil {
+		return nil, err
+	}
+
+	return &event, nil
+}
+
+func (c *KafkaConsumerAdapter) Close() {
+	c.consumer.Close()
+}

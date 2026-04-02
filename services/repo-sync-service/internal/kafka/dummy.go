@@ -36,6 +36,21 @@ func (d *DummyProducer) Close() {
 
 type DummyConsumer struct{}
 
+// Close implements [Consumer].
+func (d *DummyConsumer) Close() {
+	panic("unimplemented")
+}
+
+// ReadMessage implements [Consumer].
+func (d *DummyConsumer) ReadMessage(timeout int) (*reposync.RepoEvent, error) {
+	panic("unimplemented")
+}
+
+// SubscribeTopics implements [Consumer].
+func (d *DummyConsumer) SubscribeTopics(topics []string) error {
+	panic("unimplemented")
+}
+
 func NewDummyConsumer() Consumer {
 	return &DummyConsumer{}
 }
