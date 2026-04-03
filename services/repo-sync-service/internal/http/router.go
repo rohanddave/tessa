@@ -84,6 +84,7 @@ func (h handler) handleRepoEvent(w http.ResponseWriter, r *http.Request) {
 		RepoURL:     strings.TrimSpace(req.RepoURL),
 		Provider:    strings.TrimSpace(req.Provider),
 		Branch:      defaultBranch(strings.TrimSpace(req.Branch)),
+		CommitSHA:   strings.TrimSpace(req.CommitSHA),
 		EventType:   strings.TrimSpace(req.EventType),
 		RequestedBy: strings.TrimSpace(req.RequestedBy),
 		ReceivedAt:  time.Now().UTC(),

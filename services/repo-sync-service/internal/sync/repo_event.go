@@ -29,6 +29,7 @@ type RepoEventRequest struct {
 	RepoURL     string `json:"repo_url"`
 	Provider    string `json:"provider"`
 	Branch      string `json:"branch"`
+	CommitSHA   string `json:"commit_sha"`
 	EventType   string `json:"event_type"`
 	RequestedBy string `json:"requested_by"`
 }
