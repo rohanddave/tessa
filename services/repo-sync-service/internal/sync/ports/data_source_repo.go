@@ -3,7 +3,7 @@ package ports
 import "io"
 
 type DataSourceRepo interface {
-	OpenRepoArchive(input OpenRepoFileStreamInput) (*RepoFileStream, error)
+	OpenRepoArchive(input OpenRepoFileStreamInput) (RepoFileStream, error)
 	ComputeDiff(oldSHA string, newSHA string) (bool, error)
 }
 
