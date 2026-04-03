@@ -9,6 +9,7 @@ import (
 
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/config"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/kafka"
+	reposync "github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync"
 )
 
 func main() {
@@ -41,7 +42,7 @@ func main() {
 }
 
 func createAndRunNKafkaConsumers(number int, config *kafka.KafkaConsumerConfig, topic string, logger *log.Logger) {
-	for i := range number {
+	for i := 0; i < number; i++ {
 		c := kafka.NewKafkaConsumer(config)
 		err := c.SubscribeTopics([]string{topic})
 
@@ -62,8 +63,29 @@ func createAndRunNKafkaConsumers(number int, config *kafka.KafkaConsumerConfig, 
 				if msg == nil {
 					continue
 				}
-				logger.Printf("lifecycle consumer %d received message: %s", workerId, string(msg.RepoURL))
+
+				handleMessage(msg, logger)
+				logger.Printf("lifecycle consumer %d received message for repo: %s", workerId, msg.RepoURL)
 			}
 		}(c, i)
+	}
+}
+
+func handleMessage(msg *reposync.RepoEvent, logger *log.Logger) {
+	logger.Printf("Received message for repo: %s, event type: %s", msg.RepoURL, msg.EventType)
+	switch msg.EventType {
+	case "repo.created":
+		// handle repo registration event
+		logger.Printf("Handling repo registration for repo: %s", msg.RepoURL)
+		logger.Printf("Repo registration service wiring is still pending for repo: %s", msg.RepoURL)
+
+	case "repo.updated":
+		// handle repo update event
+		logger.Printf("Handling repo update for repo: %s", msg.RepoURL)
+	case "repo.deleted":
+		// handle repo deletion event
+		logger.Printf("Handling repo deletion for repo: %s", msg.RepoURL)
+	default:
+		logger.Printf("Unknown event type: %s for repo: %s", msg.EventType, msg.RepoURL)
 	}
 }

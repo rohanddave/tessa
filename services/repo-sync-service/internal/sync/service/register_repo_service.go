@@ -20,7 +20,7 @@ type FileJob struct {
 type RegisterRepoServiceInput struct {
 	RepoURL   string
 	Branch    string
-	commitSHA string
+	CommitSHA string
 }
 
 type RegisterRepoService struct {
@@ -44,12 +44,12 @@ func NewRegisterRepoService(input RegisterRepoServiceInput, dataSourceRepo ports
 		blobStoreRepo:     blobStoreRepo,
 		repoURL:           input.RepoURL,
 		branch:            input.Branch,
-		commitSHA:         input.commitSHA,
+		commitSHA:         input.CommitSHA,
 		manifest: domain.Manifest{
 			Id:        "",
 			RepoURL:   input.RepoURL,
 			Branch:    input.Branch,
-			CommitSHA: input.commitSHA,
+			CommitSHA: input.CommitSHA,
 			Files:     []domain.ManifestFile{},
 		},
 	}
