@@ -35,27 +35,13 @@ func NewKafkaProducer(config *KafkaProducerConfig) Producer {
 	return &KafkaProducerAdapter{config: config, producer: p}
 }
 
-func (p *KafkaProducerAdapter) getTopic(event *sync.RepoEvent) (string, error) {
-	switch event.EventType {
-	case "repo.created", "repo.deleted":
-		return util.EnvOrDefault("KAFKA_LIFE_CYCLE_TOPIC", "repo-sync.repo-lifecycle"), nil
-	case "repo.updated":
-		return util.EnvOrDefault("KAFKA_EVENTS_TOPIC", "repo-sync.repo-events"), nil
-	default:
-		return "", fmt.Errorf("unsupported event type: %s", event.EventType)
-	}
+func (p *KafkaProducerAdapter) getTopic(_ *sync.RepoEvent) (string, error) {
+	return util.EnvOrDefault("KAFKA_EVENTS_TOPIC", "repo-sync.repo-events"), nil
 }
 
 func (p *KafkaProducerAdapter) getPartitionKey(event *sync.RepoEvent) (string, error) {
 	// Use repo URL as partition key to ensure events for the same repo go to the same partition
-	switch event.EventType {
-	case "repo.created", "repo.deleted":
-		return event.RepoURL, nil
-	case "repo.updated":
-		return event.RepoURL + ":" + event.Branch, nil
-	default:
-		return "", fmt.Errorf("unsupported event type: %s", event.EventType)
-	}
+	return event.RepoURL, nil
 }
 
 func (p *KafkaProducerAdapter) Produce(event *sync.RepoEvent) error {

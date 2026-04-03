@@ -19,12 +19,11 @@ func main() {
 
 	logger := log.New(os.Stdout, "", log.LstdFlags)
 	logger.Printf(
-		"starting %s api on :%s with kafka=%s eventstopic=%s lifecycletopic=%s bucket=%s s3=%s",
+		"starting %s api on :%s with kafka=%s eventstopic=%s bucket=%s s3=%s",
 		cfg.ServiceName,
 		cfg.Port,
 		cfg.Kafka.Brokers,
 		cfg.Kafka.EventsTopic,
-		cfg.Kafka.LifeCycleTopic,
 		cfg.Storage.Bucket,
 		cfg.Storage.Endpoint,
 	)

@@ -3,7 +3,6 @@ x-repo-sync-service-environment: &repo-sync-service-environment
   LOG_LEVEL: info
   KAFKA_BROKERS: kafka:9092
   KAFKA_EVENTS_TOPIC: repo-sync.repo-events
-  KAFKA_LIFE_CYCLE_TOPIC: repo-sync.repo-lifecycle
   SNAPSHOT_STORE_HOST: snapshot-store
   SNAPSHOT_STORE_PORT: "5432"
   SNAPSHOT_STORE_DB: snapshot_store
@@ -58,7 +57,11 @@ services:
     volumes:
       - kafka-data:/tmp/kraft-combined-logs
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1",
+        ]
       interval: 10s
       timeout: 5s
       retries: 10

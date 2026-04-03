@@ -15,9 +15,8 @@ type Config struct {
 }
 
 type KafkaConfig struct {
-	Brokers        string
-	EventsTopic    string
-	LifeCycleTopic string
+	Brokers     string
+	EventsTopic string
 }
 
 type GitHubConfig struct {
@@ -48,9 +47,8 @@ func Load() Config {
 		Port:        util.EnvOrDefault("PORT", "8081"),
 		LogLevel:    util.EnvOrDefault("LOG_LEVEL", "info"),
 		Kafka: KafkaConfig{
-			Brokers:        util.EnvOrDefault("KAFKA_BROKERS", "localhost:19092"),
-			EventsTopic:    util.EnvOrDefault("KAFKA_EVENTS_TOPIC", "repo-sync.repo-events"),
-			LifeCycleTopic: util.EnvOrDefault("KAFKA_LIFE_CYCLE_TOPIC", "repo-sync.repo-lifecycle"),
+			Brokers:     util.EnvOrDefault("KAFKA_BROKERS", "localhost:19092"),
+			EventsTopic: util.EnvOrDefault("KAFKA_EVENTS_TOPIC", "repo-sync.repo-events"),
 		},
 		GitHub: GitHubConfig{
 			Token: util.EnvOrDefault("GITHUB_TOKEN", ""),

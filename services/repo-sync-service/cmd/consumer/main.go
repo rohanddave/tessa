@@ -54,22 +54,14 @@ func main() {
 		dataSourceRepo:    dataSourceRepo,
 	}
 
-	numberOfLifeCycleConsumers := 5
-	numberOfEventConsumers := 5
-
-	lifecycleConsumerConfig := &kafka.KafkaConsumerConfig{
-		Brokers: cfg.Kafka.Brokers,
-		GroupId: "repo-sync-lifecycle-consumer-group",
-	}
-
-	createAndRunNKafkaConsumers(numberOfLifeCycleConsumers, lifecycleConsumerConfig, cfg.Kafka.LifeCycleTopic, logger, deps)
+	numberOfConsumers := 5
 
 	eventConsumerConfig := &kafka.KafkaConsumerConfig{
 		Brokers: cfg.Kafka.Brokers,
 		GroupId: "repo-sync-event-consumer-group",
 	}
 
-	createAndRunNKafkaConsumers(numberOfEventConsumers, eventConsumerConfig, cfg.Kafka.EventsTopic, logger, deps)
+	createAndRunNKafkaConsumers(numberOfConsumers, eventConsumerConfig, cfg.Kafka.EventsTopic, logger, deps)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)

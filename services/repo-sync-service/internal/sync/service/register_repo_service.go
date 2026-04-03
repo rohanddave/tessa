@@ -103,9 +103,11 @@ func (s *RegisterRepoService) RegisterRepo() error {
 	if err != nil {
 		return err
 	}
+	
+	manifestFileName := util.HashString(s.repoURL + s.branch + s.commitSHA) + "_manifest.json"
 
 	// create a manifest file and insert into blob store
-	manifestURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/manifest.json", manifestBytes)
+	manifestURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+manifestFileName, manifestBytes)
 	if err != nil {
 		return err
 	}

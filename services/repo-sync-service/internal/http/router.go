@@ -43,9 +43,8 @@ func (h handler) handleRoot(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"service": h.config.ServiceName,
 		"kafka": map[string]string{
-			"brokers":        h.config.Kafka.Brokers,
-			"eventstopic":    h.config.Kafka.EventsTopic,
-			"lifecycletopic": h.config.Kafka.LifeCycleTopic,
+			"brokers":     h.config.Kafka.Brokers,
+			"eventstopic": h.config.Kafka.EventsTopic,
 		},
 		"s3": map[string]string{
 			"endpoint": h.config.Storage.Endpoint,
@@ -87,8 +86,7 @@ func (h handler) handleRepoEvent(w http.ResponseWriter, r *http.Request) {
 		Branch:      defaultBranch(strings.TrimSpace(req.Branch)),
 		EventType:   strings.TrimSpace(req.EventType),
 		RequestedBy: strings.TrimSpace(req.RequestedBy),
-		// Topic:       h.config.Kafka.LifeCycleTopic,
-		ReceivedAt: time.Now().UTC(),
+		ReceivedAt:  time.Now().UTC(),
 	}
 
 	if err := h.producer.Produce(&event); err != nil {
