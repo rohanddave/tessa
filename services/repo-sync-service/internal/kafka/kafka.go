@@ -108,10 +108,24 @@ type KafkaConsumerConfig struct {
 	GroupId string
 }
 
+type Message struct {
+	event *sync.RepoEvent
+	raw   *cfkafka.Message
+}
+
+func (m *Message) Event() *sync.RepoEvent {
+	if m == nil {
+		return nil
+	}
+
+	return m.event
+}
+
 type Consumer interface {
 	SubscribeTopics(topics []string) error
 
-	ReadMessage(timeout time.Duration) (*sync.RepoEvent, error)
+	ReadMessage(timeout time.Duration) (*Message, error)
+	CommitMessage(message *Message) error
 
 	Close()
 }
@@ -123,9 +137,10 @@ type KafkaConsumerAdapter struct {
 
 func NewKafkaConsumer(config *KafkaConsumerConfig) Consumer {
 	c, err := cfkafka.NewConsumer(&cfkafka.ConfigMap{
-		"bootstrap.servers": config.Brokers,
-		"group.id":          config.GroupId,
-		"auto.offset.reset": "earliest",
+		"bootstrap.servers":  config.Brokers,
+		"group.id":           config.GroupId,
+		"auto.offset.reset":  "earliest",
+		"enable.auto.commit": false,
 	})
 	if err != nil {
 		panic(err)
@@ -137,7 +152,7 @@ func (c *KafkaConsumerAdapter) SubscribeTopics(topics []string) error {
 	return c.consumer.SubscribeTopics(topics, nil)
 }
 
-func (c *KafkaConsumerAdapter) ReadMessage(timeout time.Duration) (*sync.RepoEvent, error) {
+func (c *KafkaConsumerAdapter) ReadMessage(timeout time.Duration) (*Message, error) {
 	msg, err := c.consumer.ReadMessage(timeout)
 	if err != nil {
 		if kafkaErr, ok := err.(cfkafka.Error); ok && kafkaErr.Code() == cfkafka.ErrTimedOut {
@@ -151,7 +166,19 @@ func (c *KafkaConsumerAdapter) ReadMessage(timeout time.Duration) (*sync.RepoEve
 		return nil, err
 	}
 
-	return &event, nil
+	return &Message{
+		event: &event,
+		raw:   msg,
+	}, nil
+}
+
+func (c *KafkaConsumerAdapter) CommitMessage(message *Message) error {
+	if message == nil || message.raw == nil {
+		return fmt.Errorf("message cannot be nil")
+	}
+
+	_, err := c.consumer.CommitMessage(message.raw)
+	return err
 }
 
 func (c *KafkaConsumerAdapter) Close() {

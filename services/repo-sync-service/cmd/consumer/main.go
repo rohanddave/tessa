@@ -90,24 +90,34 @@ func createAndRunNKafkaConsumers(number int, consumerConfig *kafka.KafkaConsumer
 			defer consumer.Close()
 
 			for {
-				msg, err := consumer.ReadMessage(5 * time.Second)
+				message, err := consumer.ReadMessage(5 * time.Second)
 				if err != nil {
 					logger.Printf("consumer %d read error on topic %s: %v", workerID, topic, err)
 					continue
 				}
 
-				if msg == nil {
+				if message == nil || message.Event() == nil {
 					continue
 				}
 
-				handleMessage(msg, logger, deps)
-				logger.Printf("consumer %d received message for repo: %s", workerID, msg.RepoURL)
+				event := message.Event()
+				if err := handleMessage(event, logger, deps); err != nil {
+					logger.Printf("consumer %d failed to process message for repo %s: %v", workerID, event.RepoURL, err)
+					continue
+				}
+
+				if err := consumer.CommitMessage(message); err != nil {
+					logger.Printf("consumer %d failed to commit message for repo %s: %v", workerID, event.RepoURL, err)
+					continue
+				}
+
+				logger.Printf("consumer %d processed and committed message for repo: %s", workerID, event.RepoURL)
 			}
 		}(consumer, i)
 	}
 }
 
-func handleMessage(msg *reposync.RepoEvent, logger *log.Logger, deps consumerHandlerDeps) {
+func handleMessage(msg *reposync.RepoEvent, logger *log.Logger, deps consumerHandlerDeps) error {
 	logger.Printf("Received message for repo: %s, event type: %s", msg.RepoURL, msg.EventType)
 
 	switch msg.EventType {
@@ -121,8 +131,7 @@ func handleMessage(msg *reposync.RepoEvent, logger *log.Logger, deps consumerHan
 		}, deps.dataSourceRepo, deps.snapshotStoreRepo, deps.blobStoreRepo, deps.stateGateRepo)
 
 		if err := registerRepoService.RegisterRepo(); err != nil {
-			logger.Printf("Repo registration failed for repo %s: %v", msg.RepoURL, err)
-			return
+			return err
 		}
 
 		logger.Printf("Completed repo registration for repo: %s", msg.RepoURL)
@@ -136,4 +145,6 @@ func handleMessage(msg *reposync.RepoEvent, logger *log.Logger, deps consumerHan
 	default:
 		logger.Printf("Unknown event type: %s for repo: %s", msg.EventType, msg.RepoURL)
 	}
+
+	return nil
 }

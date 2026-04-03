@@ -43,7 +43,12 @@ func (d *DummyConsumer) Close() {
 }
 
 // ReadMessage implements [Consumer].
-func (d *DummyConsumer) ReadMessage(timeout time.Duration) (*reposync.RepoEvent, error) {
+func (d *DummyConsumer) ReadMessage(timeout time.Duration) (*Message, error) {
+	panic("unimplemented")
+}
+
+// CommitMessage implements [Consumer].
+func (d *DummyConsumer) CommitMessage(message *Message) error {
 	panic("unimplemented")
 }
 
