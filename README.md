@@ -19,7 +19,7 @@ The currently implemented end-to-end slice is:
 11. The repo is marked `registered` in the Postgres-backed repo registry.
 12. The Kafka message is committed only after successful processing.
 
-`repo.updated` and `repo.deleted` event routes exist in the model and topic layout, but the fully wired business flow is still focused on `repo.created`.
+`repo.updated` and `repo.deleted` event routes also exist now. `repo.updated` has a working manifest-diff flow, while `repo.deleted` remains simpler and focused on cleanup.
 
 ## Repository layout
 
@@ -175,7 +175,7 @@ services/repo-sync-service/
 - [internal/sync/ports](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/sync/ports)
   outbound interfaces for data source, blob store, snapshot store, and repo registry
 - [internal/sync/service](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/sync/service)
-  business workflows like repo registration and deletion
+  business workflows like repo registration, repo update, and deletion
 - [internal/util](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/util)
   small shared helpers like env loading and content hashing
 
@@ -239,7 +239,7 @@ The `repo.created` handling path is the most complete business workflow in the p
 
 `RegisterRepoService` calls the Postgres-backed repo registry:
 
-- `TryStartRegistration(repoURL)`
+- `TryStartRegistration(repoURL, branch, commitSHA)`
 
 This is implemented as an atomic SQL transition, not an in-memory mutex. It succeeds only if the repo is eligible to enter the `registering` state.
 
@@ -291,6 +291,64 @@ Finally, the repo registry marks the repo as:
 
 Only after that does the consumer commit the Kafka message.
 
+## `repo.updated` update flow
+
+`repo.updated` is now modeled as an incremental snapshot refresh for the single tracked branch of a repo.
+
+### Step 1: repo and branch eligibility
+
+`RepoUpdateService` first checks the repo registry:
+
+- `TryUpdateRepo(repoURL, branch)`
+
+This ensures updates only proceed for repos that are already registered and only for the tracked branch stored in the repo registry.
+
+### Step 2: previous snapshot lookup
+
+The update flow loads the latest snapshot for the repo from `SnapshotStoreRepo`.
+
+If there is no previous snapshot, the update is rejected because there is no baseline to diff against.
+
+### Step 3: previous manifest load
+
+The service fetches the previous manifest from MinIO using the manifest URL stored in the previous snapshot.
+
+That manifest is unmarshaled and copied into a new in-memory working manifest for the new commit.
+
+### Step 4: archive streaming and file comparison
+
+The GitHub data source streams the new repo archive for the incoming commit.
+
+As files are streamed:
+
+- each file is hashed
+- the path is marked as seen for the current update run
+- if the previous hash for that path matches, the file is treated as unchanged
+- if the path is new or its hash changed, the blob is uploaded to MinIO and the manifest entry is updated
+
+### Step 5: deleted file detection
+
+After the stream finishes, any file path that existed in the previous manifest but was not seen in the new stream is removed from the working manifest.
+
+This is how deleted files are detected without requiring a second archive or a Git-specific diff API.
+
+### Step 6: new manifest and snapshot
+
+Once the diff is complete:
+
+- the new manifest is written to MinIO
+- a new snapshot row is created in Postgres
+
+### Step 7: registry update completion
+
+Finally, the repo registry calls:
+
+- `MarkUpdated(repoURL, commitSHA)`
+
+This moves the repo from `updating` back to `registered` and stores the latest commit SHA in the repo registry record.
+
+Only after that does the consumer commit the Kafka message.
+
 ## Current storage adapters
 
 ### Blob store
@@ -314,6 +372,8 @@ It currently supports:
 
 - `CreateSnapshot`
 - `GetSnapshot`
+- `GetLatestSnapshot`
+- `DeleteSnapshotsByRepoURL`
 
 ### Repo registry
 
@@ -325,6 +385,8 @@ It currently supports:
 - `MarkRegistered`
 - `TryStartDeletion`
 - `MarkDeleted`
+- `TryUpdateRepo`
+- `MarkUpdated`
 
 These methods are implemented with atomic SQL transitions so they work across multiple service instances and containers.
 
@@ -378,6 +440,57 @@ When you run `docker compose up --build`:
 4. `snapshot-store` starts and initializes the shared Postgres database.
 5. `repo-sync-service-api` starts.
 6. `repo-sync-service-consumer` starts.
+
+## Future scope
+
+There are a few known areas where the current implementation works functionally but should be improved for production resilience.
+
+### Bound memory usage for file jobs
+
+The current registration and update pipelines read each streamed file fully into memory before it is handed to worker goroutines through `FileJob`.
+
+Future work:
+
+- bound the `fileJobs` channel size
+- cap the maximum in-memory bytes allowed across queued jobs
+- consider spilling large files to temporary storage or streaming directly into blob-store uploads
+
+This will keep large repos from causing uncontrolled memory growth.
+
+### Make concurrency configurable
+
+The current worker counts are hard-coded in the services and consumer runtime.
+
+Future work:
+
+- expose worker counts through environment variables
+- separately tune:
+  - Kafka consumer goroutine count
+  - registration file worker count
+  - update file worker count
+
+This will make the service easier to tune for local development versus larger deployments.
+
+### Support explicit skip-but-commit consumer outcomes
+
+Right now the consumer commits Kafka messages only after a handler returns success, and leaves messages uncommitted on error.
+
+There are cases where a consumer may intentionally not perform the full business workflow but should still commit the message, for example:
+
+- duplicate or already-applied updates
+- events for untracked branches
+- events that are valid but intentionally no-op
+
+Future work:
+
+- model handler outcomes more explicitly than just `error` or `nil`
+- support outcomes like:
+  - processed and commit
+  - skipped and commit
+  - retry later and do not commit
+  - dead-letter then commit
+
+That will make consumer behavior more precise and prevent retry loops for events that should be safely acknowledged.
 7. Kafka UI starts and connects to Kafka.
 
 ## Notes
