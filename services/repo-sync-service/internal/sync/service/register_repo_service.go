@@ -130,9 +130,9 @@ func (s *RegisterRepoService) RegisterRepo() error {
 func (s *RegisterRepoService) streamRepoFiles(jobs chan<- FileJob) error {
 	// open repo archive stream from data source
 	fileStream, err := s.dataSourceRepo.OpenRepoArchive(ports.OpenRepoFileStreamInput{
-		RepoURL: s.repoURL,
-		Branch:  s.branch,
-		Ref:     s.commitSHA,
+		RepoURL:   s.repoURL,
+		Branch:    s.branch,
+		CommitSHA: s.commitSHA,
 	})
 
 	if err != nil {

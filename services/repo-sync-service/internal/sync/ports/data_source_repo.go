@@ -8,9 +8,9 @@ type DataSourceRepo interface {
 }
 
 type OpenRepoFileStreamInput struct {
-	RepoURL string
-	Branch  string
-	Ref     string
+	RepoURL   string
+	Branch    string
+	CommitSHA string
 }
 
 type RepoFileStream interface {

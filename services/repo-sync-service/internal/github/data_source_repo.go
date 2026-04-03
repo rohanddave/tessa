@@ -3,6 +3,7 @@ package github
 import (
 	"archive/tar"
 	"compress/gzip"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -31,9 +32,25 @@ func (r *DataSourceRepo) OpenRepoArchive(input ports.OpenRepoFileStreamInput) (p
 		return nil, err
 	}
 
-	ref := strings.TrimSpace(input.Ref)
+	branch := strings.TrimSpace(input.Branch)
+	commitSHA := strings.TrimSpace(input.CommitSHA)
+	ref := commitSHA
 	if ref == "" {
-		ref = strings.TrimSpace(input.Branch)
+		ref = branch
+	}
+
+	if ref == "" {
+		return nil, fmt.Errorf("branch or commit SHA is required")
+	}
+
+	if branch != "" && commitSHA != "" {
+		matches, err := r.branchMatchesCommit(owner, repo, branch, commitSHA)
+		if err != nil {
+			return nil, err
+		}
+		if !matches {
+			return nil, fmt.Errorf("commit %q does not match branch %q for repo %s/%s", commitSHA, branch, owner, repo)
+		}
 	}
 
 	archiveURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/tarball", owner, repo)
@@ -84,6 +101,44 @@ func (r *DataSourceRepo) ComputeDiff(oldSHA string, newSHA string) (bool, error)
 	}
 
 	return strings.TrimSpace(oldSHA) != strings.TrimSpace(newSHA), nil
+}
+
+func (r *DataSourceRepo) branchMatchesCommit(owner string, repo string, branch string, commitSHA string) (bool, error) {
+	branchURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/branches/%s", owner, repo, url.PathEscape(branch))
+
+	req, err := http.NewRequest(http.MethodGet, branchURL, nil)
+	if err != nil {
+		return false, fmt.Errorf("create github branch request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	if strings.TrimSpace(r.token) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(r.token))
+	}
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("load github branch metadata: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+		return false, fmt.Errorf("github branch request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var payload struct {
+		Commit struct {
+			SHA string `json:"sha"`
+		} `json:"commit"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return false, fmt.Errorf("decode github branch metadata: %w", err)
+	}
+
+	return strings.TrimSpace(payload.Commit.SHA) == commitSHA, nil
 }
 
 type repoFileStream struct {
