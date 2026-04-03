@@ -98,6 +98,37 @@ func (r *BlobStoreRepo) RemoveFile(fileURL string) error {
 	return nil
 }
 
+func (r *BlobStoreRepo) RemoveDirectory(directory string) error {
+	prefix, err := r.resolveObjectKey(directory)
+	if err != nil {
+		return err
+	}
+
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+
+	objectsCh := make(chan miniosdk.ObjectInfo)
+	go func() {
+		defer close(objectsCh)
+
+		for object := range r.client.ListObjects(context.Background(), r.bucket, miniosdk.ListObjectsOptions{
+			Prefix:    prefix,
+			Recursive: true,
+		}) {
+			objectsCh <- object
+		}
+	}()
+
+	for removeErr := range r.client.RemoveObjects(context.Background(), r.bucket, objectsCh, miniosdk.RemoveObjectsOptions{}) {
+		if removeErr.Err != nil {
+			return fmt.Errorf("remove object %q under prefix %q: %w", removeErr.ObjectName, prefix, removeErr.Err)
+		}
+	}
+
+	return nil
+}
+
 func (r *BlobStoreRepo) resolveObjectKey(fileURL string) (string, error) {
 	if fileURL == "" {
 		return "", fmt.Errorf("file url cannot be empty")

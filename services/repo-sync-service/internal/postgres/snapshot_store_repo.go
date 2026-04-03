@@ -99,6 +99,22 @@ func (r *SnapshotStoreRepo) GetSnapshot(snapshotID string) (*domain.Snapshot, er
 	return &snapshot, nil
 }
 
+func (r *SnapshotStoreRepo) DeleteSnapshotsByRepoURL(repoURL string) error {
+	_, err := r.pool.Exec(
+		context.Background(),
+		`
+		DELETE FROM snapshots
+		WHERE repo_url = $1
+		`,
+		repoURL,
+	)
+	if err != nil {
+		return fmt.Errorf("delete snapshot for repo %q: %w", repoURL, err)
+	}
+
+	return nil
+}
+
 func (r *SnapshotStoreRepo) Close() {
 	if r.pool != nil {
 		r.pool.Close()
