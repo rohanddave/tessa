@@ -44,12 +44,12 @@ func (r *DataSourceRepo) OpenRepoArchive(input ports.OpenRepoFileStreamInput) (p
 	}
 
 	if branch != "" && commitSHA != "" {
-		matches, err := r.branchMatchesCommit(owner, repo, branch, commitSHA)
+		matches, err := r.branchContainsCommit(owner, repo, branch, commitSHA)
 		if err != nil {
 			return nil, err
 		}
 		if !matches {
-			return nil, fmt.Errorf("commit %q does not match branch %q for repo %s/%s", commitSHA, branch, owner, repo)
+			return nil, fmt.Errorf("commit %q is not contained in branch %q for repo %s/%s", commitSHA, branch, owner, repo)
 		}
 	}
 
@@ -103,12 +103,18 @@ func (r *DataSourceRepo) ComputeDiff(oldSHA string, newSHA string) (bool, error)
 	return strings.TrimSpace(oldSHA) != strings.TrimSpace(newSHA), nil
 }
 
-func (r *DataSourceRepo) branchMatchesCommit(owner string, repo string, branch string, commitSHA string) (bool, error) {
-	branchURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/branches/%s", owner, repo, url.PathEscape(branch))
+func (r *DataSourceRepo) branchContainsCommit(owner string, repo string, branch string, commitSHA string) (bool, error) {
+	compareURL := fmt.Sprintf(
+		"https://api.github.com/repos/%s/%s/compare/%s...%s",
+		owner,
+		repo,
+		url.PathEscape(commitSHA),
+		url.PathEscape(branch),
+	)
 
-	req, err := http.NewRequest(http.MethodGet, branchURL, nil)
+	req, err := http.NewRequest(http.MethodGet, compareURL, nil)
 	if err != nil {
-		return false, fmt.Errorf("create github branch request: %w", err)
+		return false, fmt.Errorf("create github compare request: %w", err)
 	}
 
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -119,26 +125,25 @@ func (r *DataSourceRepo) branchMatchesCommit(owner string, repo string, branch s
 
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("load github branch metadata: %w", err)
+		return false, fmt.Errorf("load github compare metadata: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
-		return false, fmt.Errorf("github branch request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return false, fmt.Errorf("github compare request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var payload struct {
-		Commit struct {
-			SHA string `json:"sha"`
-		} `json:"commit"`
+		Status string `json:"status"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return false, fmt.Errorf("decode github branch metadata: %w", err)
+		return false, fmt.Errorf("decode github compare metadata: %w", err)
 	}
 
-	return strings.TrimSpace(payload.Commit.SHA) == commitSHA, nil
+	status := strings.TrimSpace(payload.Status)
+	return status == "identical" || status == "ahead", nil
 }
 
 type repoFileStream struct {
