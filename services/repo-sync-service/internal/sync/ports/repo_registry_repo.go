@@ -5,5 +5,5 @@ type RepoRegistryRepo interface {
 	MarkRegistered(repoURL string) error
 	TryStartDeletion(repoURL string) (bool, error)
 	MarkDeleted(repoURL string) error
-	TryUpdateRepo(repoURL string) (bool, error)
+	TryUpdateRepo(repoURL string, branch string) (bool, error)
 }

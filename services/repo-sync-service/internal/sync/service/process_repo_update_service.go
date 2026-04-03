@@ -32,9 +32,10 @@ type RepoUpdateService struct {
 
 	manifestMu sync.Mutex
 	manifest   domain.Manifest
+	seenPaths  map[string]struct{}
 }
 
-func NewRepoUpdateService(input *RepoUpdateServiceInput, repoRegistryRepo ports.RepoRegistryRepo, dataSourceRepo ports.DataSourceRepo, blobStoreRepo ports.BlobStoreRepo, snapshotStoreRepo ports.SnapshotStoreRepo, repoURL string, branch string, commitSHA string) *RepoUpdateService {
+func NewRepoUpdateService(input *RepoUpdateServiceInput, repoRegistryRepo ports.RepoRegistryRepo, dataSourceRepo ports.DataSourceRepo, blobStoreRepo ports.BlobStoreRepo, snapshotStoreRepo ports.SnapshotStoreRepo) *RepoUpdateService {
 	return &RepoUpdateService{
 		repoRegistryRepo:       repoRegistryRepo,
 		dataSourceRepo:         dataSourceRepo,
@@ -44,6 +45,8 @@ func NewRepoUpdateService(input *RepoUpdateServiceInput, repoRegistryRepo ports.
 		branch:                 input.Branch,
 		commitSHA:              input.CommitSHA,
 		blobStorageDestination: util.HashString(input.RepoURL),
+
+		seenPaths: make(map[string]struct{}),
 		manifest: domain.Manifest{
 			Id:        "",
 			RepoURL:   input.RepoURL,
@@ -56,7 +59,7 @@ func NewRepoUpdateService(input *RepoUpdateServiceInput, repoRegistryRepo ports.
 
 func (s *RepoUpdateService) UpdateRepo() error {
 	// check if state is registered for this repo
-	updateAllowed, err := s.repoRegistryRepo.TryUpdateRepo(s.repoURL)
+	updateAllowed, err := s.repoRegistryRepo.TryUpdateRepo(s.repoURL, s.branch)
 	if err != nil {
 		return fmt.Errorf("try update repo for %q: %w", s.repoURL, err)
 	}
@@ -67,6 +70,10 @@ func (s *RepoUpdateService) UpdateRepo() error {
 	prevSnapshot, err := s.snapshotStoreRepo.GetLatestSnapshot(s.repoURL)
 	if err != nil {
 		return fmt.Errorf("get latest snapshot for %q: %w", s.repoURL, err)
+	}
+
+	if prevSnapshot == nil {
+		return fmt.Errorf("no previous snapshot found for repo %q, cannot perform update", s.repoURL)
 	}
 
 	if prevSnapshot.CommitSHA == s.commitSHA {
@@ -84,7 +91,17 @@ func (s *RepoUpdateService) UpdateRepo() error {
 		return fmt.Errorf("unmarshal previous manifest for %q: %w", s.repoURL, err)
 	}
 
-	s.manifest.Files = make(map[string]domain.ManifestFile, len(prevManifest.Files))
+	s.manifest = domain.Manifest{
+		Id:        "",
+		RepoURL:   s.repoURL,
+		Branch:    s.branch,
+		CommitSHA: s.commitSHA,
+		Files:     make(map[string]domain.ManifestFile, len(prevManifest.Files)),
+	}
+
+	for path, file := range prevManifest.Files {
+		s.manifest.Files[path] = file
+	}
 
 	fileJobs := make(chan FileJob)
 	workerErrors := make(chan error, 5)
@@ -113,6 +130,12 @@ func (s *RepoUpdateService) UpdateRepo() error {
 	for err := range workerErrors {
 		if err != nil {
 			return err
+		}
+	}
+
+	for path := range s.manifest.Files {
+		if _, seen := s.seenPaths[path]; !seen {
+			delete(s.manifest.Files, path)
 		}
 	}
 
@@ -189,16 +212,21 @@ func (s *RepoUpdateService) processFileJobsAndAttachToManifest(jobs <-chan FileJ
 
 		s.manifestMu.Lock()
 		prevFile, exists := s.manifest.Files[job.Path]
-		s.manifest.Files[job.Path] = domain.ManifestFile{
+		newFile := domain.ManifestFile{
 			FileHash: contentHash,
 			FileSize: job.Size,
 		}
-		s.manifestMu.Unlock()
 
-		if exists && prevFile.FileHash == util.HashContent(job.Content) {
-			// file unchanged, skip processing
+		if exists && prevFile.FileHash == contentHash {
+			// unchanged
+			s.manifest.Files[job.Path] = newFile
+			s.manifestMu.Unlock()
 			continue
 		}
+
+		// new or changed
+		s.manifest.Files[job.Path] = newFile
+		s.manifestMu.Unlock()
 
 		_, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+contentHash, job.Content)
 		if err != nil {

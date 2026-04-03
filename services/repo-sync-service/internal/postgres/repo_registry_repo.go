@@ -113,15 +113,16 @@ func (r *RepoRegistryRepo) MarkDeleted(repoURL string) error {
 	return nil
 }
 
-func (r *RepoRegistryRepo) TryUpdateRepo(repoURL string) (bool, error) {
+func (r *RepoRegistryRepo) TryUpdateRepo(repoURL string, branch string) (bool, error) {
 	commandTag, err := r.pool.Exec(
 		context.Background(),
 		`
 		UPDATE repo_states
 		SET state = 'updating'
-		WHERE repo_url = $1 AND state = 'registered'
+		WHERE repo_url = $1 AND branch = $2 AND state = 'registered'
 		`,
 		repoURL,
+		branch,
 	)
 	if err != nil {
 		return false, fmt.Errorf("try start update for %q: %w", repoURL, err)

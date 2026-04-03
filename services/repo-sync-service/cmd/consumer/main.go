@@ -134,7 +134,7 @@ func handleMessage(msg *reposync.RepoEvent, logger *log.Logger, deps consumerHan
 			RepoURL:   msg.RepoURL,
 			Branch:    msg.Branch,
 			CommitSHA: msg.CommitSHA,
-		}, deps.repoRegistryRepo, deps.dataSourceRepo, deps.blobStoreRepo, deps.snapshotStoreRepo, msg.RepoURL, msg.Branch, msg.CommitSHA)
+		}, deps.repoRegistryRepo, deps.dataSourceRepo, deps.blobStoreRepo, deps.snapshotStoreRepo)
 
 		if err := updateRepoService.UpdateRepo(); err != nil {
 			return err
