@@ -5,10 +5,10 @@ type Manifest struct {
 	RepoURL   string
 	Branch    string
 	CommitSHA string
-	Files     []ManifestFile
+	Files     map[string]ManifestFile
 }
 
 type ManifestFile struct {
-	FilePath string
 	FileHash string
+	FileSize int64
 }

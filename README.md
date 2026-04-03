@@ -11,12 +11,12 @@ The currently implemented end-to-end slice is:
 3. The API publishes the event to Kafka and waits for delivery confirmation.
 4. `repo-sync-service-consumer` reads the event from Kafka.
 5. For `repo.created`, the consumer invokes `RegisterRepoService`.
-6. `RegisterRepoService` atomically marks the repo as `registering` through the state gate in Postgres.
+6. `RegisterRepoService` atomically marks the repo as `registering` through the repo registry in Postgres.
 7. The GitHub data source downloads the repository archive and streams files one by one.
 8. Files are uploaded to MinIO.
 9. A manifest is created and uploaded to MinIO.
 10. A snapshot record is stored in Postgres.
-11. The repo is marked `registered` in the Postgres-backed state gate.
+11. The repo is marked `registered` in the Postgres-backed repo registry.
 12. The Kafka message is committed only after successful processing.
 
 `repo.updated` and `repo.deleted` event routes exist in the model and topic layout, but the fully wired business flow is still focused on `repo.created`.
@@ -103,7 +103,7 @@ Key details:
 
 It currently stores:
 
-- repo lifecycle state through the Postgres `StateGateRepo`
+- repo registration state through the Postgres `RepoRegistryRepo`
 - snapshot metadata through the Postgres `SnapshotStoreRepo`
 
 ### repo-sync-service-api
@@ -169,11 +169,11 @@ services/repo-sync-service/
 - [internal/minio](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/minio)
   MinIO-backed blob store implementation
 - [internal/postgres](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/postgres)
-  Postgres-backed snapshot store and state gate implementations
+  Postgres-backed snapshot store and repo registry implementations
 - [internal/sync/domain](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/sync/domain)
   domain models like `Manifest` and `Snapshot`
 - [internal/sync/ports](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/sync/ports)
-  outbound interfaces for data source, blob store, snapshot store, and state gate
+  outbound interfaces for data source, blob store, snapshot store, and repo registry
 - [internal/sync/service](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/sync/service)
   business workflows like repo registration and deletion
 - [internal/util](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/util)
@@ -237,7 +237,7 @@ The `repo.created` handling path is the most complete business workflow in the p
 
 ### Step 1: state transition
 
-`RegisterRepoService` calls the Postgres-backed state gate:
+`RegisterRepoService` calls the Postgres-backed repo registry:
 
 - `TryStartRegistration(repoURL)`
 
@@ -285,7 +285,7 @@ The snapshot currently records:
 
 ### Step 6: final state transition
 
-Finally, the state gate marks the repo as:
+Finally, the repo registry marks the repo as:
 
 - `registered`
 
@@ -315,9 +315,9 @@ It currently supports:
 - `CreateSnapshot`
 - `GetSnapshot`
 
-### State gate
+### Repo registry
 
-The state gate is implemented by [internal/postgres/state_gate_repo.go](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/postgres/state_gate_repo.go).
+The repo registry is implemented by [internal/postgres/repo_registry_repo.go](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/postgres/repo_registry_repo.go).
 
 It currently supports:
 

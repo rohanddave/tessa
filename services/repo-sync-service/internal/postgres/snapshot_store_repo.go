@@ -99,6 +99,37 @@ func (r *SnapshotStoreRepo) GetSnapshot(snapshotID string) (*domain.Snapshot, er
 	return &snapshot, nil
 }
 
+func (r *SnapshotStoreRepo) GetLatestSnapshot(repoURL string) (*domain.Snapshot, error) {
+	var snapshot domain.Snapshot
+
+	err := r.pool.QueryRow(
+		context.Background(),
+		`
+		SELECT id, repo_url, branch, commit_sha, manifest_url
+		FROM snapshots
+		WHERE repo_url = $1
+		ORDER BY id DESC
+		LIMIT 1
+		`,
+		repoURL,
+	).Scan(
+		&snapshot.Id,
+		&snapshot.RepoURL,
+		&snapshot.Branch,
+		&snapshot.CommitSHA,
+		&snapshot.ManifestURL,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+
+		return nil, fmt.Errorf("get latest snapshot for repo %q: %w", repoURL, err)
+	}
+
+	return &snapshot, nil
+}
+
 func (r *SnapshotStoreRepo) DeleteSnapshotsByRepoURL(repoURL string) error {
 	_, err := r.pool.Exec(
 		context.Background(),

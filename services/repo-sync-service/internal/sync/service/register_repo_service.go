@@ -25,7 +25,7 @@ type RegisterRepoServiceInput struct {
 }
 
 type RegisterRepoService struct {
-	stateGateRepo     ports.StateGateRepo
+	repoRegistryRepo  ports.RepoRegistryRepo
 	dataSourceRepo    ports.DataSourceRepo
 	snapshotStoreRepo ports.SnapshotStoreRepo
 	blobStoreRepo     ports.BlobStoreRepo
@@ -40,9 +40,9 @@ type RegisterRepoService struct {
 	manifest   domain.Manifest
 }
 
-func NewRegisterRepoService(input RegisterRepoServiceInput, dataSourceRepo ports.DataSourceRepo, snapshotStoreRepo ports.SnapshotStoreRepo, blobStoreRepo ports.BlobStoreRepo, stateGateRepo ports.StateGateRepo) *RegisterRepoService {
+func NewRegisterRepoService(input RegisterRepoServiceInput, dataSourceRepo ports.DataSourceRepo, snapshotStoreRepo ports.SnapshotStoreRepo, blobStoreRepo ports.BlobStoreRepo, repoRegistryRepo ports.RepoRegistryRepo) *RegisterRepoService {
 	return &RegisterRepoService{
-		stateGateRepo:          stateGateRepo,
+		repoRegistryRepo:       repoRegistryRepo,
 		dataSourceRepo:         dataSourceRepo,
 		snapshotStoreRepo:      snapshotStoreRepo,
 		blobStoreRepo:          blobStoreRepo,
@@ -55,13 +55,13 @@ func NewRegisterRepoService(input RegisterRepoServiceInput, dataSourceRepo ports
 			RepoURL:   input.RepoURL,
 			Branch:    input.Branch,
 			CommitSHA: input.CommitSHA,
-			Files:     []domain.ManifestFile{},
+			Files:     map[string]domain.ManifestFile{},
 		},
 	}
 }
 
 func (s *RegisterRepoService) RegisterRepo() error {
-	started, err := s.stateGateRepo.TryStartRegistration(s.repoURL)
+	started, err := s.repoRegistryRepo.TryStartRegistration(s.repoURL, s.branch, s.commitSHA)
 	if err != nil {
 		return err
 	}
@@ -103,8 +103,8 @@ func (s *RegisterRepoService) RegisterRepo() error {
 	if err != nil {
 		return err
 	}
-	
-	manifestFileName := util.HashString(s.repoURL + s.branch + s.commitSHA) + "_manifest.json"
+
+	manifestFileName := util.HashString(s.repoURL+s.branch+s.commitSHA) + "_manifest.json"
 
 	// create a manifest file and insert into blob store
 	manifestURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+manifestFileName, manifestBytes)
@@ -124,7 +124,7 @@ func (s *RegisterRepoService) RegisterRepo() error {
 		return err
 	}
 
-	return s.stateGateRepo.MarkRegistered(s.repoURL)
+	return s.repoRegistryRepo.MarkRegistered(s.repoURL)
 }
 
 func (s *RegisterRepoService) streamRepoFiles(jobs chan<- FileJob) error {
@@ -175,10 +175,10 @@ func (s *RegisterRepoService) processFileJobsAndAttachToManifest(jobs <-chan Fil
 		}
 
 		s.manifestMu.Lock()
-		s.manifest.Files = append(s.manifest.Files, domain.ManifestFile{
-			FilePath: job.Path,
+		s.manifest.Files[job.Path] = domain.ManifestFile{
 			FileHash: contentHash,
-		})
+			FileSize: job.Size,
+		}
 		s.manifestMu.Unlock()
 	}
 	return nil

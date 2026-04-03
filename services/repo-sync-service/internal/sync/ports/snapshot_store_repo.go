@@ -9,5 +9,7 @@ type SnapshotStoreRepo interface {
 
 	GetSnapshot(snapshotId string) (*domain.Snapshot, error)
 
+	GetLatestSnapshot(repoURL string) (*domain.Snapshot, error)
+
 	DeleteSnapshotsByRepoURL(repoURL string) error
 }

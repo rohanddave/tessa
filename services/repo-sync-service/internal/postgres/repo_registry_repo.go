@@ -9,11 +9,11 @@ import (
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
 )
 
-type StateGateRepo struct {
+type RepoRegistryRepo struct {
 	pool *pgxpool.Pool
 }
 
-func NewStateGateRepo(ctx context.Context, cfg config.DatabaseConfig) (ports.StateGateRepo, error) {
+func NewRepoRegistryRepo(ctx context.Context, cfg config.DatabaseConfig) (ports.RepoRegistryRepo, error) {
 	dsn := fmt.Sprintf(
 		"postgresql://%s:%s@%s:%s/%s?sslmode=%s",
 		cfg.User,
@@ -29,7 +29,7 @@ func NewStateGateRepo(ctx context.Context, cfg config.DatabaseConfig) (ports.Sta
 		return nil, fmt.Errorf("create postgres pool: %w", err)
 	}
 
-	repo := &StateGateRepo{
+	repo := &RepoRegistryRepo{
 		pool: pool,
 	}
 
@@ -41,17 +41,19 @@ func NewStateGateRepo(ctx context.Context, cfg config.DatabaseConfig) (ports.Sta
 	return repo, nil
 }
 
-func (r *StateGateRepo) TryStartRegistration(repoURL string) (bool, error) {
+func (r *RepoRegistryRepo) TryStartRegistration(repoURL string, branch string, commitSHA string) (bool, error) {
 	commandTag, err := r.pool.Exec(
 		context.Background(),
 		`
-		INSERT INTO repo_states (repo_url, state)
-		VALUES ($1, 'registering')
+		INSERT INTO repo_states (repo_url, branch, commit_sha, state)
+		VALUES ($1, $2, $3, 'registering')
 		ON CONFLICT (repo_url)
 		DO UPDATE SET state = EXCLUDED.state
 		WHERE repo_states.state NOT IN ('registering', 'registered', 'deleting')
 		`,
 		repoURL,
+		branch,
+		commitSHA,
 	)
 	if err != nil {
 		return false, fmt.Errorf("try start registration for %q: %w", repoURL, err)
@@ -60,7 +62,7 @@ func (r *StateGateRepo) TryStartRegistration(repoURL string) (bool, error) {
 	return commandTag.RowsAffected() > 0, nil
 }
 
-func (r *StateGateRepo) MarkRegistered(repoURL string) error {
+func (r *RepoRegistryRepo) MarkRegistered(repoURL string) error {
 	_, err := r.pool.Exec(
 		context.Background(),
 		`
@@ -77,7 +79,7 @@ func (r *StateGateRepo) MarkRegistered(repoURL string) error {
 	return nil
 }
 
-func (r *StateGateRepo) TryStartDeletion(repoURL string) (bool, error) {
+func (r *RepoRegistryRepo) TryStartDeletion(repoURL string) (bool, error) {
 	commandTag, err := r.pool.Exec(
 		context.Background(),
 		`
@@ -94,7 +96,7 @@ func (r *StateGateRepo) TryStartDeletion(repoURL string) (bool, error) {
 	return commandTag.RowsAffected() > 0, nil
 }
 
-func (r *StateGateRepo) MarkDeleted(repoURL string) error {
+func (r *RepoRegistryRepo) MarkDeleted(repoURL string) error {
 	_, err := r.pool.Exec(
 		context.Background(),
 		`
@@ -111,18 +113,37 @@ func (r *StateGateRepo) MarkDeleted(repoURL string) error {
 	return nil
 }
 
-func (r *StateGateRepo) Close() {
+func (r *RepoRegistryRepo) TryUpdateRepo(repoURL string) (bool, error) {
+	commandTag, err := r.pool.Exec(
+		context.Background(),
+		`
+		UPDATE repo_states
+		SET state = 'updating'
+		WHERE repo_url = $1 AND state = 'registered'
+		`,
+		repoURL,
+	)
+	if err != nil {
+		return false, fmt.Errorf("try start update for %q: %w", repoURL, err)
+	}
+
+	return commandTag.RowsAffected() > 0, nil
+}
+
+func (r *RepoRegistryRepo) Close() {
 	if r.pool != nil {
 		r.pool.Close()
 	}
 }
 
-func (r *StateGateRepo) ensureSchema(ctx context.Context) error {
+func (r *RepoRegistryRepo) ensureSchema(ctx context.Context) error {
 	_, err := r.pool.Exec(
 		ctx,
 		`
 		CREATE TABLE IF NOT EXISTS repo_states (
 			repo_url TEXT PRIMARY KEY,
+			branch TEXT NOT NULL,
+			commit_sha TEXT NOT NULL,
 			state TEXT NOT NULL
 		)
 		`,

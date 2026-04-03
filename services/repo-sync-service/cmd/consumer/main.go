@@ -19,7 +19,7 @@ import (
 )
 
 type consumerHandlerDeps struct {
-	stateGateRepo     ports.StateGateRepo
+	repoRegistryRepo  ports.RepoRegistryRepo
 	snapshotStoreRepo ports.SnapshotStoreRepo
 	blobStoreRepo     ports.BlobStoreRepo
 	dataSourceRepo    ports.DataSourceRepo
@@ -31,9 +31,9 @@ func main() {
 	logger := log.New(os.Stdout, "", log.LstdFlags)
 	ctx := context.Background()
 
-	stateGateRepo, err := postgres.NewStateGateRepo(ctx, cfg.Database)
+	repoRegistryRepo, err := postgres.NewRepoRegistryRepo(ctx, cfg.Database)
 	if err != nil {
-		logger.Fatalf("failed to create state gate repo: %v", err)
+		logger.Fatalf("failed to create repo registry repo: %v", err)
 	}
 
 	snapshotStoreRepo, err := postgres.NewSnapshotStoreRepo(ctx, cfg.Database)
@@ -48,7 +48,7 @@ func main() {
 
 	dataSourceRepo := github.NewDataSourceRepo(cfg.GitHub.Token)
 	deps := consumerHandlerDeps{
-		stateGateRepo:     stateGateRepo,
+		repoRegistryRepo:  repoRegistryRepo,
 		snapshotStoreRepo: snapshotStoreRepo,
 		blobStoreRepo:     blobStoreRepo,
 		dataSourceRepo:    dataSourceRepo,
@@ -120,7 +120,7 @@ func handleMessage(msg *reposync.RepoEvent, logger *log.Logger, deps consumerHan
 			RepoURL:   msg.RepoURL,
 			Branch:    msg.Branch,
 			CommitSHA: msg.CommitSHA,
-		}, deps.dataSourceRepo, deps.snapshotStoreRepo, deps.blobStoreRepo, deps.stateGateRepo)
+		}, deps.dataSourceRepo, deps.snapshotStoreRepo, deps.blobStoreRepo, deps.repoRegistryRepo)
 
 		if err := registerRepoService.RegisterRepo(); err != nil {
 			return err
@@ -138,7 +138,7 @@ func handleMessage(msg *reposync.RepoEvent, logger *log.Logger, deps consumerHan
 			RepoURL:   msg.RepoURL,
 			Branch:    msg.Branch,
 			CommitSHA: msg.CommitSHA,
-		}, deps.snapshotStoreRepo, deps.blobStoreRepo, deps.stateGateRepo)
+		}, deps.snapshotStoreRepo, deps.blobStoreRepo, deps.repoRegistryRepo)
 
 		if err := deleteRepoService.DeleteRepo(); err != nil {
 			return err

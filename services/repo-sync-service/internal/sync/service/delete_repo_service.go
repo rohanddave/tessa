@@ -14,7 +14,7 @@ type DeleteRepoServiceInput struct {
 }
 
 type DeleteRepoService struct {
-	stateGateRepo     ports.StateGateRepo
+	repoRegistryRepo  ports.RepoRegistryRepo
 	snapshotStoreRepo ports.SnapshotStoreRepo
 	blobStoreRepo     ports.BlobStoreRepo
 
@@ -23,9 +23,9 @@ type DeleteRepoService struct {
 	commitSHA string
 }
 
-func NewDeleteRepoService(input DeleteRepoServiceInput, snapshotStoreRepo ports.SnapshotStoreRepo, blobStoreRepo ports.BlobStoreRepo, stateGateRepo ports.StateGateRepo) *DeleteRepoService {
+func NewDeleteRepoService(input DeleteRepoServiceInput, snapshotStoreRepo ports.SnapshotStoreRepo, blobStoreRepo ports.BlobStoreRepo, repoRegistryRepo ports.RepoRegistryRepo) *DeleteRepoService {
 	return &DeleteRepoService{
-		stateGateRepo:     stateGateRepo,
+		repoRegistryRepo:  repoRegistryRepo,
 		snapshotStoreRepo: snapshotStoreRepo,
 		blobStoreRepo:     blobStoreRepo,
 		repoURL:           input.RepoURL,
@@ -35,7 +35,7 @@ func NewDeleteRepoService(input DeleteRepoServiceInput, snapshotStoreRepo ports.
 }
 
 func (s *DeleteRepoService) DeleteRepo() error {
-	started, err := s.stateGateRepo.TryStartDeletion(s.repoURL)
+	started, err := s.repoRegistryRepo.TryStartDeletion(s.repoURL)
 	if err != nil {
 		return err
 	}
@@ -53,7 +53,7 @@ func (s *DeleteRepoService) DeleteRepo() error {
 		return err
 	}
 
-	err = s.stateGateRepo.MarkDeleted(s.repoURL)
+	err = s.repoRegistryRepo.MarkDeleted(s.repoURL)
 	if err != nil {
 		return err
 	}
