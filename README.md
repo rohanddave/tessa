@@ -12,6 +12,7 @@ This repository is set up as a multi-service workspace with shared local infrast
 - Kafka: shared event bus for all services
 - Kafka UI: local topic and consumer inspection
 - MinIO: local S3-compatible object storage
+- Snapshot Store: shared PostgreSQL database instance
 
 ## Quick start
 
@@ -27,6 +28,7 @@ Once the stack is up:
 - Kafka UI is available at `http://localhost:8080`
 - MinIO API is available at `http://localhost:9000`
 - MinIO console is available at `http://localhost:9001`
+- Snapshot Store Postgres is available at `localhost:5432`
 
 Default local MinIO credentials:
 
@@ -34,6 +36,12 @@ Default local MinIO credentials:
 - password: `minioadmin`
 
 The `repo-sync` bucket is created automatically during startup.
+
+Default local Snapshot Store credentials:
+
+- database: `snapshot_store`
+- username: `postgres`
+- password: `postgres`
 
 ## Docker Compose breakdown
 
@@ -91,6 +99,18 @@ Key pieces:
 - `entrypoint`: retries until MinIO is reachable, then creates the `repo-sync` bucket if needed and sets it to private
 - `restart: "no"`: this is intentional because it is a one-time initialization task
 
+### Snapshot Store
+
+The `snapshot-store` service provides a shared PostgreSQL instance for structured repo state, snapshot metadata, or other relational data needed across services.
+
+Key pieces:
+
+- `image: postgres:16-alpine`: uses PostgreSQL 16 in a lightweight Alpine image
+- `ports`: exposes Postgres on `localhost:5432`
+- `environment`: creates a default local database named `snapshot_store` with `postgres` / `postgres` credentials
+- `volumes`: `snapshot-store-data` persists database data across restarts
+- `healthcheck`: uses `pg_isready` so dependent services can wait for Postgres readiness
+
 ### repo-sync-service-api
 
 The `repo-sync-service-api` service is the API runtime for the first application service in the repo. Docker builds it from the local Go code in `./services/repo-sync-service`.
@@ -126,6 +146,7 @@ The `volumes` section defines named persistent storage:
 
 - `kafka-data`: stores Kafka state between restarts
 - `minio-data`: stores MinIO buckets and objects between restarts
+- `snapshot-store-data`: stores PostgreSQL data between restarts
 
 ### Startup order
 
@@ -134,6 +155,7 @@ When you run `docker compose up --build`:
 1. Kafka starts and becomes healthy.
 2. MinIO starts.
 3. `minio-init` creates the `repo-sync` bucket.
-4. `repo-sync-service-api` starts with Kafka and S3-compatible config.
-5. `repo-sync-service-consumer` starts as a separate background process.
-6. `kafka-ui` starts and connects to Kafka.
+4. `snapshot-store` starts and initializes the shared Postgres database.
+5. `repo-sync-service-api` starts with Kafka and S3-compatible config.
+6. `repo-sync-service-consumer` starts as a separate background process.
+7. `kafka-ui` starts and connects to Kafka.

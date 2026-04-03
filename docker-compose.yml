@@ -103,6 +103,25 @@ services:
     networks:
       - tessa-net
 
+  snapshot-store:
+    image: postgres:16-alpine
+    container_name: snapshot-store
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: snapshot_store
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - snapshot-store-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d snapshot_store"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - tessa-net
+
   repo-sync-service-api:
     <<: *repo-sync-service-common
     container_name: repo-sync-service-api
@@ -124,3 +143,4 @@ networks:
 volumes:
   kafka-data:
   minio-data:
+  snapshot-store-data:

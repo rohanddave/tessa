@@ -8,6 +8,7 @@ Starter Go service for repository synchronization workflows.
 - publish sync events to Kafka
 - support decoupled consumer processes for background work
 - persist sync artifacts or snapshots to S3-compatible storage via MinIO locally
+- interact with the shared Snapshot Store Postgres database using `pgx`
 
 ## Structure
 
@@ -49,6 +50,12 @@ Validation rules:
 - `event_type` must be one of `repo.created`, `repo.updated`, or `repo.deleted`
 - `requested_by` is required
 - `branch` is optional and defaults to `main`
+
+## Persistence
+
+The service uses `github.com/jackc/pgx/v5` with `pgxpool` for PostgreSQL access. This keeps database access lightweight and explicit without introducing a full ORM.
+
+For object storage, the service uses `github.com/minio/minio-go/v7` to interact with the shared MinIO-backed file store through an S3-compatible API.
 
 ## Local run
 

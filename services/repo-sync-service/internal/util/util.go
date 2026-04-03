@@ -1,6 +1,10 @@
 package util
 
-import "os"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
+)
 
 func EnvOrDefault(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {
@@ -8,4 +12,9 @@ func EnvOrDefault(key, fallback string) string {
 	}
 
 	return fallback
+}
+
+func HashContent(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
 }
