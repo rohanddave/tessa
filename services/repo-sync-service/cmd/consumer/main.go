@@ -116,7 +116,7 @@ func handleMessage(msg *reposync.RepoEvent, logger *log.Logger, deps consumerHan
 	case "repo.created":
 		logger.Printf("Handling repo registration for repo: %s", msg.RepoURL)
 
-		registerRepoService := service.NewRegisterRepoService(service.RegisterRepoServiceInput{
+		registerRepoService := service.NewRegisterRepoService(&service.RegisterRepoServiceInput{
 			RepoURL:   msg.RepoURL,
 			Branch:    msg.Branch,
 			CommitSHA: msg.CommitSHA,
@@ -130,11 +130,22 @@ func handleMessage(msg *reposync.RepoEvent, logger *log.Logger, deps consumerHan
 
 	case "repo.updated":
 		logger.Printf("Handling repo update for repo: %s", msg.RepoURL)
+		updateRepoService := service.NewRepoUpdateService(&service.RepoUpdateServiceInput{
+			RepoURL:   msg.RepoURL,
+			Branch:    msg.Branch,
+			CommitSHA: msg.CommitSHA,
+		}, deps.repoRegistryRepo, deps.dataSourceRepo, deps.blobStoreRepo, deps.snapshotStoreRepo, msg.RepoURL, msg.Branch, msg.CommitSHA)
+
+		if err := updateRepoService.UpdateRepo(); err != nil {
+			return err
+		}
+
+		logger.Printf("Completed repo update for repo: %s", msg.RepoURL)
 
 	case "repo.deleted":
 		logger.Printf("Handling repo deletion for repo: %s", msg.RepoURL)
 
-		deleteRepoService := service.NewDeleteRepoService(service.DeleteRepoServiceInput{
+		deleteRepoService := service.NewDeleteRepoService(&service.DeleteRepoServiceInput{
 			RepoURL:   msg.RepoURL,
 			Branch:    msg.Branch,
 			CommitSHA: msg.CommitSHA,

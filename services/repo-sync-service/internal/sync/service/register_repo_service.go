@@ -40,7 +40,7 @@ type RegisterRepoService struct {
 	manifest   domain.Manifest
 }
 
-func NewRegisterRepoService(input RegisterRepoServiceInput, dataSourceRepo ports.DataSourceRepo, snapshotStoreRepo ports.SnapshotStoreRepo, blobStoreRepo ports.BlobStoreRepo, repoRegistryRepo ports.RepoRegistryRepo) *RegisterRepoService {
+func NewRegisterRepoService(input *RegisterRepoServiceInput, dataSourceRepo ports.DataSourceRepo, snapshotStoreRepo ports.SnapshotStoreRepo, blobStoreRepo ports.BlobStoreRepo, repoRegistryRepo ports.RepoRegistryRepo) *RegisterRepoService {
 	return &RegisterRepoService{
 		repoRegistryRepo:       repoRegistryRepo,
 		dataSourceRepo:         dataSourceRepo,

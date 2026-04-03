@@ -23,7 +23,7 @@ type DeleteRepoService struct {
 	commitSHA string
 }
 
-func NewDeleteRepoService(input DeleteRepoServiceInput, snapshotStoreRepo ports.SnapshotStoreRepo, blobStoreRepo ports.BlobStoreRepo, repoRegistryRepo ports.RepoRegistryRepo) *DeleteRepoService {
+func NewDeleteRepoService(input *DeleteRepoServiceInput, snapshotStoreRepo ports.SnapshotStoreRepo, blobStoreRepo ports.BlobStoreRepo, repoRegistryRepo ports.RepoRegistryRepo) *DeleteRepoService {
 	return &DeleteRepoService{
 		repoRegistryRepo:  repoRegistryRepo,
 		snapshotStoreRepo: snapshotStoreRepo,
