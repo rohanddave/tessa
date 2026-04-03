@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -13,6 +14,8 @@ import (
 
 type StateGateRepo struct {
 	pool *pgxpool.Pool
+
+	mu sync.RWMutex
 }
 
 func NewStateGateRepo(ctx context.Context, cfg config.DatabaseConfig) (ports.StateGateRepo, error) {
@@ -44,6 +47,10 @@ func NewStateGateRepo(ctx context.Context, cfg config.DatabaseConfig) (ports.Sta
 }
 
 func (r *StateGateRepo) SetRepoState(repoURL string, state string) error {
+	// acquire write lock to ensure that only one goroutine can set the state for a repo at a time, and also to prevent race conditions with GetRepoState which acquires a read lock
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	_, err := r.pool.Exec(
 		context.Background(),
 		`
@@ -63,6 +70,10 @@ func (r *StateGateRepo) SetRepoState(repoURL string, state string) error {
 }
 
 func (r *StateGateRepo) GetRepoState(repoURL string) (string, error) {
+	// acquire read lock to allow multiple goroutines to read the state for a repo concurrently, but prevent race conditions with SetRepoState which acquires a write lock
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	var state string
 
 	err := r.pool.QueryRow(
