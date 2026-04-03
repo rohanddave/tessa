@@ -68,7 +68,7 @@ func (s *RegisterRepoService) RegisterRepo() error {
 
 	var wg sync.WaitGroup
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -93,7 +93,7 @@ func (s *RegisterRepoService) RegisterRepo() error {
 		}
 	}
 
-	s.manifest.CommitSHA = s.commitSHA
+	// s.manifest.CommitSHA = s.commitSHA
 	manifestBytes, err := json.Marshal(s.manifest)
 	if err != nil {
 		return err
@@ -106,14 +106,13 @@ func (s *RegisterRepoService) RegisterRepo() error {
 	}
 
 	// create snapshot in snapshot store with urls of the manifest and raw files in blob store
-	snapshot := domain.Snapshot{
+	_, err = s.snapshotStoreRepo.CreateSnapshot(&domain.Snapshot{
 		RepoURL:     s.repoURL,
 		Branch:      s.branch,
 		CommitSHA:   s.commitSHA,
 		ManifestURL: manifestURL,
-	}
+	})
 
-	_, err = s.snapshotStoreRepo.CreateSnapshot(snapshot)
 	if err != nil {
 		return err
 	}
@@ -156,9 +155,9 @@ func (s *RegisterRepoService) streamRepoFiles(jobs chan<- FileJob) error {
 		}
 	}
 
-	if fileStream.CommitSHA() != "" {
-		s.commitSHA = fileStream.CommitSHA()
-	}
+	// if fileStream.CommitSHA() != "" {
+	// 	s.commitSHA = fileStream.CommitSHA()
+	// }
 
 	return nil
 }
