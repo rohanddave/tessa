@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 
@@ -57,10 +58,12 @@ func NewRegisterRepoService(input RegisterRepoServiceInput, dataSourceRepo ports
 }
 
 func (s *RegisterRepoService) RegisterRepo() error {
-	// this function itself should use a mutex lock to ensure that only one registration process can happen for a repo at a time, and it should also check the state gate repo to see if the repo is already being registered or is already registered before proceeding with the registration
-	err := s.stateGateRepo.SetRepoState(s.repoURL, "registering")
+	started, err := s.stateGateRepo.TryStartRegistration(s.repoURL)
 	if err != nil {
 		return err
+	}
+	if !started {
+		return fmt.Errorf("repo registration already in progress or repo is not eligible for registration: %s", s.repoURL)
 	}
 
 	fileJobs := make(chan FileJob)
@@ -117,7 +120,7 @@ func (s *RegisterRepoService) RegisterRepo() error {
 		return err
 	}
 
-	return s.stateGateRepo.SetRepoState(s.repoURL, "registered")
+	return s.stateGateRepo.MarkRegistered(s.repoURL)
 }
 
 func (s *RegisterRepoService) streamRepoFiles(jobs chan<- FileJob) error {

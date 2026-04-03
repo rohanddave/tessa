@@ -1,7 +1,8 @@
 package ports
 
 type StateGateRepo interface {
-	SetRepoState(repoURL string, state string) error
-
-	GetRepoState(repoURL string) (string, error)
+	TryStartRegistration(repoURL string) (bool, error)
+	MarkRegistered(repoURL string) error
+	TryStartDeletion(repoURL string) (bool, error)
+	MarkDeleted(repoURL string) error
 }

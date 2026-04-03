@@ -1,6 +1,10 @@
 package service
 
-import "github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
+import (
+	"fmt"
+
+	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
+)
 
 type DeleteRepoService struct {
 	stateGateRepo     ports.StateGateRepo
@@ -20,9 +24,12 @@ func NewDeleteRepoService(repoURL string, snapshotStoreRepo ports.SnapshotStoreR
 }
 
 func (s *DeleteRepoService) DeleteRepo() error {
-	err := s.stateGateRepo.SetRepoState(s.repoURL, "deleting")
+	started, err := s.stateGateRepo.TryStartDeletion(s.repoURL)
 	if err != nil {
 		return err
+	}
+	if !started {
+		return fmt.Errorf("repo deletion already in progress or repo is not eligible for deletion: %s", s.repoURL)
 	}
 
 	err = s.snapshotStoreRepo.DeleteSnapshotsByRepoURL(s.repoURL)
@@ -35,7 +42,7 @@ func (s *DeleteRepoService) DeleteRepo() error {
 		return err
 	}
 
-	err = s.stateGateRepo.SetRepoState(s.repoURL, "deleted")
+	err = s.stateGateRepo.MarkDeleted(s.repoURL)
 	if err != nil {
 		return err
 	}

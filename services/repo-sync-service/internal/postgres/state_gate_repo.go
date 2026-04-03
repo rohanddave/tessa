@@ -2,11 +2,8 @@ package postgres
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"sync"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/config"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
@@ -14,8 +11,6 @@ import (
 
 type StateGateRepo struct {
 	pool *pgxpool.Pool
-
-	mu sync.RWMutex
 }
 
 func NewStateGateRepo(ctx context.Context, cfg config.DatabaseConfig) (ports.StateGateRepo, error) {
@@ -46,54 +41,74 @@ func NewStateGateRepo(ctx context.Context, cfg config.DatabaseConfig) (ports.Sta
 	return repo, nil
 }
 
-func (r *StateGateRepo) SetRepoState(repoURL string, state string) error {
-	// acquire write lock to ensure that only one goroutine can set the state for a repo at a time, and also to prevent race conditions with GetRepoState which acquires a read lock
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	_, err := r.pool.Exec(
+func (r *StateGateRepo) TryStartRegistration(repoURL string) (bool, error) {
+	commandTag, err := r.pool.Exec(
 		context.Background(),
 		`
 		INSERT INTO repo_states (repo_url, state)
-		VALUES ($1, $2)
+		VALUES ($1, 'registering')
 		ON CONFLICT (repo_url)
 		DO UPDATE SET state = EXCLUDED.state
+		WHERE repo_states.state NOT IN ('registering', 'registered', 'deleting')
 		`,
 		repoURL,
-		state,
 	)
 	if err != nil {
-		return fmt.Errorf("set repo state for %q: %w", repoURL, err)
+		return false, fmt.Errorf("try start registration for %q: %w", repoURL, err)
+	}
+
+	return commandTag.RowsAffected() > 0, nil
+}
+
+func (r *StateGateRepo) MarkRegistered(repoURL string) error {
+	_, err := r.pool.Exec(
+		context.Background(),
+		`
+		UPDATE repo_states
+		SET state = 'registered'
+		WHERE repo_url = $1
+		`,
+		repoURL,
+	)
+	if err != nil {
+		return fmt.Errorf("mark registered for %q: %w", repoURL, err)
 	}
 
 	return nil
 }
 
-func (r *StateGateRepo) GetRepoState(repoURL string) (string, error) {
-	// acquire read lock to allow multiple goroutines to read the state for a repo concurrently, but prevent race conditions with SetRepoState which acquires a write lock
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	var state string
-
-	err := r.pool.QueryRow(
+func (r *StateGateRepo) TryStartDeletion(repoURL string) (bool, error) {
+	commandTag, err := r.pool.Exec(
 		context.Background(),
 		`
-		SELECT state
-		FROM repo_states
+		UPDATE repo_states
+		SET state = 'deleting'
+		WHERE repo_url = $1 AND state = 'registered'
+		`,
+		repoURL,
+	)
+	if err != nil {
+		return false, fmt.Errorf("try start deletion for %q: %w", repoURL, err)
+	}
+
+	return commandTag.RowsAffected() > 0, nil
+}
+
+func (r *StateGateRepo) MarkDeleted(repoURL string) error {
+	_, err := r.pool.Exec(
+		context.Background(),
+		`
+		UPDATE repo_states
+		SET state = 'deleted'
 		WHERE repo_url = $1
 		`,
 		repoURL,
-	).Scan(&state)
+	)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", nil
-		}
-
-		return "", fmt.Errorf("get repo state for %q: %w", repoURL, err)
+		return fmt.Errorf("mark deleted for %q: %w", repoURL, err)
 	}
 
-	return state, nil
+	return nil
 }
 
 func (r *StateGateRepo) Close() {
