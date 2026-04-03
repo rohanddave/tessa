@@ -127,7 +127,7 @@ func handleMessage(msg *reposync.RepoEvent, logger *log.Logger, deps consumerHan
 		registerRepoService := service.NewRegisterRepoService(service.RegisterRepoServiceInput{
 			RepoURL:   msg.RepoURL,
 			Branch:    msg.Branch,
-			CommitSHA: "",
+			CommitSHA: msg.CommitSHA,
 		}, deps.dataSourceRepo, deps.snapshotStoreRepo, deps.blobStoreRepo, deps.stateGateRepo)
 
 		if err := registerRepoService.RegisterRepo(); err != nil {
@@ -141,6 +141,18 @@ func handleMessage(msg *reposync.RepoEvent, logger *log.Logger, deps consumerHan
 
 	case "repo.deleted":
 		logger.Printf("Handling repo deletion for repo: %s", msg.RepoURL)
+
+		deleteRepoService := service.NewDeleteRepoService(service.DeleteRepoServiceInput{
+			RepoURL:   msg.RepoURL,
+			Branch:    msg.Branch,
+			CommitSHA: msg.CommitSHA,
+		}, deps.snapshotStoreRepo, deps.blobStoreRepo, deps.stateGateRepo)
+
+		if err := deleteRepoService.DeleteRepo(); err != nil {
+			return err
+		}
+
+		logger.Printf("Completed repo deletion for repo: %s", msg.RepoURL)
 
 	default:
 		logger.Printf("Unknown event type: %s for repo: %s", msg.EventType, msg.RepoURL)

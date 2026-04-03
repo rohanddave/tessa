@@ -26,7 +26,7 @@ func NewRouter(cfg config.Config, producer kafka.Producer) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/healthz", h.handleHealth)
-	mux.HandleFunc("/register-repo-event", h.handleRepoEvent)
+	mux.HandleFunc("/repo-event", h.handleRepoEvent)
 	mux.HandleFunc("/", h.handleRoot)
 
 	return mux

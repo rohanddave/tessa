@@ -18,3 +18,7 @@ func HashContent(content []byte) string {
 	sum := sha256.Sum256(content)
 	return hex.EncodeToString(sum[:])
 }
+
+func HashString(s string) string {
+	return HashContent([]byte(s))
+}

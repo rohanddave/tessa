@@ -34,19 +34,22 @@ type RegisterRepoService struct {
 	branch    string
 	commitSHA string
 
+	blobStorageDestination string
+
 	manifestMu sync.Mutex
 	manifest   domain.Manifest
 }
 
 func NewRegisterRepoService(input RegisterRepoServiceInput, dataSourceRepo ports.DataSourceRepo, snapshotStoreRepo ports.SnapshotStoreRepo, blobStoreRepo ports.BlobStoreRepo, stateGateRepo ports.StateGateRepo) *RegisterRepoService {
 	return &RegisterRepoService{
-		stateGateRepo:     stateGateRepo,
-		dataSourceRepo:    dataSourceRepo,
-		snapshotStoreRepo: snapshotStoreRepo,
-		blobStoreRepo:     blobStoreRepo,
-		repoURL:           input.RepoURL,
-		branch:            input.Branch,
-		commitSHA:         input.CommitSHA,
+		stateGateRepo:          stateGateRepo,
+		dataSourceRepo:         dataSourceRepo,
+		snapshotStoreRepo:      snapshotStoreRepo,
+		blobStoreRepo:          blobStoreRepo,
+		repoURL:                input.RepoURL,
+		branch:                 input.Branch,
+		commitSHA:              input.CommitSHA,
+		blobStorageDestination: util.HashString(input.RepoURL),
 		manifest: domain.Manifest{
 			Id:        "",
 			RepoURL:   input.RepoURL,
@@ -96,14 +99,13 @@ func (s *RegisterRepoService) RegisterRepo() error {
 		}
 	}
 
-	// s.manifest.CommitSHA = s.commitSHA
 	manifestBytes, err := json.Marshal(s.manifest)
 	if err != nil {
 		return err
 	}
 
 	// create a manifest file and insert into blob store
-	manifestURL, err := s.blobStoreRepo.InsertFile(s.repoURL+"/manifest.json", manifestBytes)
+	manifestURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/manifest.json", manifestBytes)
 	if err != nil {
 		return err
 	}
@@ -158,10 +160,6 @@ func (s *RegisterRepoService) streamRepoFiles(jobs chan<- FileJob) error {
 		}
 	}
 
-	// if fileStream.CommitSHA() != "" {
-	// 	s.commitSHA = fileStream.CommitSHA()
-	// }
-
 	return nil
 }
 
@@ -169,7 +167,7 @@ func (s *RegisterRepoService) processFileJobsAndAttachToManifest(jobs <-chan Fil
 	for job := range jobs {
 		// insert file content into blob store and get the url
 		contentHash := util.HashContent(job.Content)
-		_, err := s.blobStoreRepo.InsertFile(s.repoURL+"/"+contentHash, job.Content)
+		_, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+contentHash, job.Content)
 		if err != nil {
 			return err
 		}

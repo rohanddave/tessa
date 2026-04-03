@@ -34,15 +34,16 @@ type RepoEventRequest struct {
 }
 
 type RepoEvent struct {
-	EventID     string    `json:"event_id"`
+	EventID string `json:"event_id"`
 	// Status      string    `json:"status"`
-	RepoURL     string    `json:"repo_url"`
-	Provider    string    `json:"provider"`
-	Branch      string    `json:"branch"`
-	EventType   string    `json:"event_type"`
-	RequestedBy string    `json:"requested_by"`
+	RepoURL     string `json:"repo_url"`
+	Provider    string `json:"provider"`
+	Branch      string `json:"branch"`
+	CommitSHA   string `json:"commit_sha"`
+	EventType   string `json:"event_type"`
+	RequestedBy string `json:"requested_by"`
 	// Topic       string    `json:"topic"`
-	ReceivedAt  time.Time `json:"received_at"`
+	ReceivedAt time.Time `json:"received_at"`
 }
 
 func (r RepoEventRequest) Validate() error {

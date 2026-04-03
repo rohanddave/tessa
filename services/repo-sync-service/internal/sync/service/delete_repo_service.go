@@ -4,22 +4,33 @@ import (
 	"fmt"
 
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
+	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/util"
 )
+
+type DeleteRepoServiceInput struct {
+	RepoURL   string
+	Branch    string
+	CommitSHA string
+}
 
 type DeleteRepoService struct {
 	stateGateRepo     ports.StateGateRepo
 	snapshotStoreRepo ports.SnapshotStoreRepo
 	blobStoreRepo     ports.BlobStoreRepo
 
-	repoURL string
+	repoURL   string
+	branch    string
+	commitSHA string
 }
 
-func NewDeleteRepoService(repoURL string, snapshotStoreRepo ports.SnapshotStoreRepo, blobStoreRepo ports.BlobStoreRepo, stateGateRepo ports.StateGateRepo) *DeleteRepoService {
+func NewDeleteRepoService(input DeleteRepoServiceInput, snapshotStoreRepo ports.SnapshotStoreRepo, blobStoreRepo ports.BlobStoreRepo, stateGateRepo ports.StateGateRepo) *DeleteRepoService {
 	return &DeleteRepoService{
 		stateGateRepo:     stateGateRepo,
 		snapshotStoreRepo: snapshotStoreRepo,
 		blobStoreRepo:     blobStoreRepo,
-		repoURL:           repoURL,
+		repoURL:           input.RepoURL,
+		branch:            input.Branch,
+		commitSHA:         input.CommitSHA,
 	}
 }
 
@@ -37,7 +48,7 @@ func (s *DeleteRepoService) DeleteRepo() error {
 		return err
 	}
 
-	err = s.blobStoreRepo.RemoveDirectory(s.repoURL) // assuming that all files for a repo are stored under a directory named after the repo URL
+	err = s.blobStoreRepo.RemoveDirectory(util.HashString(s.repoURL)) // assuming that all files for a repo are stored under a directory named after the repo URL
 	if err != nil {
 		return err
 	}
