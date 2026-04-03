@@ -131,6 +131,24 @@ func (r *RepoRegistryRepo) TryUpdateRepo(repoURL string, branch string) (bool, e
 	return commandTag.RowsAffected() > 0, nil
 }
 
+func (r *RepoRegistryRepo) MarkUpdated(repoURL string, commitSHA string) error {
+	_, err := r.pool.Exec(
+		context.Background(),
+		`
+		UPDATE repo_states
+		SET state = 'registered', commit_sha = $2
+		WHERE repo_url = $1 AND state = 'updating'
+		`,
+		repoURL,
+		commitSHA,
+	)
+	if err != nil {
+		return fmt.Errorf("mark updated for %q: %w", repoURL, err)
+	}
+
+	return nil
+}
+
 func (r *RepoRegistryRepo) Close() {
 	if r.pool != nil {
 		r.pool.Close()

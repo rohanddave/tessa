@@ -91,6 +91,8 @@ func (s *RepoUpdateService) UpdateRepo() error {
 		return fmt.Errorf("unmarshal previous manifest for %q: %w", s.repoURL, err)
 	}
 
+	s.seenPaths = make(map[string]struct{}, len(prevManifest.Files))
+
 	s.manifest = domain.Manifest{
 		Id:        "",
 		RepoURL:   s.repoURL,
@@ -164,7 +166,7 @@ func (s *RepoUpdateService) UpdateRepo() error {
 		return err
 	}
 
-	return s.repoRegistryRepo.MarkRegistered(s.repoURL)
+	return s.repoRegistryRepo.MarkUpdated(s.repoURL, s.commitSHA)
 }
 
 func (s *RepoUpdateService) streamRepoFiles(jobs chan<- FileJob) error {
@@ -211,6 +213,7 @@ func (s *RepoUpdateService) processFileJobsAndAttachToManifest(jobs <-chan FileJ
 		contentHash := util.HashContent(job.Content)
 
 		s.manifestMu.Lock()
+		s.seenPaths[job.Path] = struct{}{}
 		prevFile, exists := s.manifest.Files[job.Path]
 		newFile := domain.ManifestFile{
 			FileHash: contentHash,
