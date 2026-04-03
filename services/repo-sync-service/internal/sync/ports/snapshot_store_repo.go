@@ -5,7 +5,7 @@ import (
 )
 
 type SnapshotStoreRepo interface {
-	CreateSnapshot(snapshot domain.Snapshot) (string, error) // returns the id of the created snapshot
+	CreateSnapshot(snapshot *domain.Snapshot) (string, error) // returns the id of the created snapshot
 
 	GetSnapshot(snapshotId string) (*domain.Snapshot, error)
 }

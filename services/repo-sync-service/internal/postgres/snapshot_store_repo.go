@@ -45,7 +45,7 @@ func NewSnapshotStoreRepo(ctx context.Context, cfg config.DatabaseConfig) (ports
 	return repo, nil
 }
 
-func (r *SnapshotStoreRepo) CreateSnapshot(snapshot domain.Snapshot) (string, error) {
+func (r *SnapshotStoreRepo) CreateSnapshot(snapshot *domain.Snapshot) (string, error) {
 	id := snapshot.Id
 	if id == "" {
 		id = uuid.NewString()
