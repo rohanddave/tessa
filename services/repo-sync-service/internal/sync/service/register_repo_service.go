@@ -60,7 +60,7 @@ func NewRegisterRepoService(input *RegisterRepoServiceInput, dataSourceRepo port
 	}
 }
 
-func (s *RegisterRepoService) RegisterRepo() error {
+func (s *RegisterRepoService) RegisterRepo() (err error) {
 	started, err := s.repoRegistryRepo.TryStartRegistration(s.repoURL, s.branch, s.commitSHA)
 	if err != nil {
 		return err
@@ -68,6 +68,17 @@ func (s *RegisterRepoService) RegisterRepo() error {
 	if !started {
 		return fmt.Errorf("repo registration already in progress or repo is not eligible for registration: %s", s.repoURL)
 	}
+
+	defer func() {
+		if err == nil {
+			return
+		}
+
+		cleanupErr := s.repoRegistryRepo.MarkDeleted(s.repoURL)
+		if cleanupErr != nil {
+			err = fmt.Errorf("%w; additionally failed to reset repo registry state: %v", err, cleanupErr)
+		}
+	}()
 
 	fileJobs := make(chan FileJob)
 	workerErrors := make(chan error, 5)
@@ -90,11 +101,13 @@ func (s *RegisterRepoService) RegisterRepo() error {
 	close(workerErrors)
 
 	if streamErr != nil {
-		return streamErr
+		err = streamErr
+		return err
 	}
 
-	for err := range workerErrors {
-		if err != nil {
+	for workerErr := range workerErrors {
+		if workerErr != nil {
+			err = workerErr
 			return err
 		}
 	}
@@ -124,7 +137,8 @@ func (s *RegisterRepoService) RegisterRepo() error {
 		return err
 	}
 
-	return s.repoRegistryRepo.MarkRegistered(s.repoURL)
+	err = s.repoRegistryRepo.MarkRegistered(s.repoURL)
+	return err
 }
 
 func (s *RegisterRepoService) streamRepoFiles(jobs chan<- FileJob) error {

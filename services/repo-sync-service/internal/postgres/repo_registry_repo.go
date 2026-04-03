@@ -49,7 +49,7 @@ func (r *RepoRegistryRepo) TryStartRegistration(repoURL string, branch string, c
 		VALUES ($1, $2, $3, 'registering')
 		ON CONFLICT (repo_url)
 		DO UPDATE SET state = EXCLUDED.state
-		WHERE repo_states.state NOT IN ('registering', 'registered', 'deleting')
+		WHERE repo_states.state NOT IN ('registering', 'registered', 'deleting', 'updating')
 		`,
 		repoURL,
 		branch,
@@ -102,8 +102,7 @@ func (r *RepoRegistryRepo) MarkDeleted(repoURL string) error {
 		`
 		UPDATE repo_states
 		SET state = 'deleted'
-		WHERE repo_url = $1
-		`,
+		WHERE repo_url = $1`,
 		repoURL,
 	)
 	if err != nil {

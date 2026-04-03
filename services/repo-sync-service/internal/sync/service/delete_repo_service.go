@@ -34,7 +34,7 @@ func NewDeleteRepoService(input *DeleteRepoServiceInput, snapshotStoreRepo ports
 	}
 }
 
-func (s *DeleteRepoService) DeleteRepo() error {
+func (s *DeleteRepoService) DeleteRepo() (err error) {
 	started, err := s.repoRegistryRepo.TryStartDeletion(s.repoURL)
 	if err != nil {
 		return err
@@ -42,6 +42,17 @@ func (s *DeleteRepoService) DeleteRepo() error {
 	if !started {
 		return fmt.Errorf("repo deletion already in progress or repo is not eligible for deletion: %s", s.repoURL)
 	}
+
+	defer func() {
+		if err == nil {
+			return
+		}
+
+		cleanupErr := s.repoRegistryRepo.MarkRegistered(s.repoURL)
+		if cleanupErr != nil {
+			err = fmt.Errorf("%w; additionally failed to reset repo registry state: %v", err, cleanupErr)
+		}
+	}()
 
 	err = s.snapshotStoreRepo.DeleteSnapshotsByRepoURL(s.repoURL)
 	if err != nil {
@@ -54,9 +65,5 @@ func (s *DeleteRepoService) DeleteRepo() error {
 	}
 
 	err = s.repoRegistryRepo.MarkDeleted(s.repoURL)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }

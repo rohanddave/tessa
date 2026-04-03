@@ -57,7 +57,7 @@ func NewRepoUpdateService(input *RepoUpdateServiceInput, repoRegistryRepo ports.
 	}
 }
 
-func (s *RepoUpdateService) UpdateRepo() error {
+func (s *RepoUpdateService) UpdateRepo() (err error) {
 	// check if state is registered for this repo
 	updateAllowed, err := s.repoRegistryRepo.TryUpdateRepo(s.repoURL, s.branch)
 	if err != nil {
@@ -66,6 +66,17 @@ func (s *RepoUpdateService) UpdateRepo() error {
 	if !updateAllowed {
 		return fmt.Errorf("cannot update repo for %q: not in registered state", s.repoURL)
 	}
+
+	defer func() {
+		if err == nil {
+			return
+		}
+
+		cleanupErr := s.repoRegistryRepo.MarkRegistered(s.repoURL)
+		if cleanupErr != nil {
+			err = fmt.Errorf("%w; additionally failed to reset repo registry state: %v", err, cleanupErr)
+		}
+	}()
 
 	prevSnapshot, err := s.snapshotStoreRepo.GetLatestSnapshot(s.repoURL)
 	if err != nil {
@@ -126,11 +137,13 @@ func (s *RepoUpdateService) UpdateRepo() error {
 	close(workerErrors)
 
 	if streamErr != nil {
-		return streamErr
+		err = streamErr
+		return err
 	}
 
-	for err := range workerErrors {
-		if err != nil {
+	for workerErr := range workerErrors {
+		if workerErr != nil {
+			err = workerErr
 			return err
 		}
 	}
@@ -166,7 +179,8 @@ func (s *RepoUpdateService) UpdateRepo() error {
 		return err
 	}
 
-	return s.repoRegistryRepo.MarkUpdated(s.repoURL, s.commitSHA)
+	err = s.repoRegistryRepo.MarkUpdated(s.repoURL, s.commitSHA)
+	return err
 }
 
 func (s *RepoUpdateService) streamRepoFiles(jobs chan<- FileJob) error {
