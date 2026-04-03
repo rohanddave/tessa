@@ -59,7 +59,6 @@ func (p *KafkaProducerAdapter) getPartitionKey(event *sync.RepoEvent) (string, e
 }
 
 func (p *KafkaProducerAdapter) Produce(event *sync.RepoEvent) error {
-	// Implementation for producing Kafka messages
 	topic, err := p.getTopic(event)
 	if err != nil {
 		return err
@@ -75,11 +74,29 @@ func (p *KafkaProducerAdapter) Produce(event *sync.RepoEvent) error {
 		return err
 	}
 
-	return p.producer.Produce(&cfkafka.Message{
+	deliveryChan := make(chan cfkafka.Event, 1)
+	defer close(deliveryChan)
+
+	err = p.producer.Produce(&cfkafka.Message{
 		TopicPartition: cfkafka.TopicPartition{Topic: &topic, Partition: cfkafka.PartitionAny},
 		Key:            []byte(partitionKey),
 		Value:          value,
-	}, nil)
+	}, deliveryChan)
+	if err != nil {
+		return err
+	}
+
+	deliveryEvent := <-deliveryChan
+	deliveredMessage, ok := deliveryEvent.(*cfkafka.Message)
+	if !ok {
+		return fmt.Errorf("unexpected kafka delivery event type %T", deliveryEvent)
+	}
+
+	if deliveredMessage.TopicPartition.Error != nil {
+		return deliveredMessage.TopicPartition.Error
+	}
+
+	return nil
 }
 
 func (p *KafkaProducerAdapter) Close() {

@@ -2,8 +2,8 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
-
 	"sync"
 
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/domain"
@@ -37,8 +37,9 @@ type RegisterRepoService struct {
 	manifest   domain.Manifest
 }
 
-func NewRegisterRepoService(input RegisterRepoServiceInput, dataSourceRepo ports.DataSourceRepo, snapshotStoreRepo ports.SnapshotStoreRepo, blobStoreRepo ports.BlobStoreRepo) *RegisterRepoService {
+func NewRegisterRepoService(input RegisterRepoServiceInput, dataSourceRepo ports.DataSourceRepo, snapshotStoreRepo ports.SnapshotStoreRepo, blobStoreRepo ports.BlobStoreRepo, stateGateRepo ports.StateGateRepo) *RegisterRepoService {
 	return &RegisterRepoService{
+		stateGateRepo:     stateGateRepo,
 		dataSourceRepo:    dataSourceRepo,
 		snapshotStoreRepo: snapshotStoreRepo,
 		blobStoreRepo:     blobStoreRepo,
@@ -63,24 +64,36 @@ func (s *RegisterRepoService) RegisterRepo() error {
 	}
 
 	fileJobs := make(chan FileJob)
-
-	go s.streamRepoFiles(fileJobs)
+	workerErrors := make(chan error, 5)
 
 	var wg sync.WaitGroup
 
-	// insert raw files into blob store
-	for i := 0; i < 5; i++ { // start 5 worker goroutines to process file jobs concurrently
+	for i := 0; i < 5; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.processFileJobsAndAttachToManifest(fileJobs)
+			if err := s.processFileJobsAndAttachToManifest(fileJobs); err != nil {
+				workerErrors <- err
+			}
 		}()
 	}
 
-	go func() {
-		wg.Wait()
-	}()
+	streamErr := s.streamRepoFiles(fileJobs)
+	close(fileJobs)
+	wg.Wait()
+	close(workerErrors)
 
+	if streamErr != nil {
+		return streamErr
+	}
+
+	for err := range workerErrors {
+		if err != nil {
+			return err
+		}
+	}
+
+	s.manifest.CommitSHA = s.commitSHA
 	manifestBytes, err := json.Marshal(s.manifest)
 	if err != nil {
 		return err
@@ -95,6 +108,8 @@ func (s *RegisterRepoService) RegisterRepo() error {
 	// create snapshot in snapshot store with urls of the manifest and raw files in blob store
 	snapshot := domain.Snapshot{
 		RepoURL:     s.repoURL,
+		Branch:      s.branch,
+		CommitSHA:   s.commitSHA,
 		ManifestURL: manifestURL,
 	}
 
@@ -103,7 +118,7 @@ func (s *RegisterRepoService) RegisterRepo() error {
 		return err
 	}
 
-	return nil
+	return s.stateGateRepo.SetRepoState(s.repoURL, "registered")
 }
 
 func (s *RegisterRepoService) streamRepoFiles(jobs chan<- FileJob) error {
@@ -123,9 +138,7 @@ func (s *RegisterRepoService) streamRepoFiles(jobs chan<- FileJob) error {
 	for {
 		repoFile, err := fileStream.Next()
 		if err != nil {
-			// if error is io.EOF, it means we have reached the end of the stream, so we can break the loop
-			// otherwise, we should return the error
-			if err.Error() == "EOF" {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			return err
@@ -143,6 +156,10 @@ func (s *RegisterRepoService) streamRepoFiles(jobs chan<- FileJob) error {
 		}
 	}
 
+	if fileStream.CommitSHA() != "" {
+		s.commitSHA = fileStream.CommitSHA()
+	}
+
 	return nil
 }
 
@@ -156,12 +173,11 @@ func (s *RegisterRepoService) processFileJobsAndAttachToManifest(jobs <-chan Fil
 		}
 
 		s.manifestMu.Lock()
-		defer s.manifestMu.Unlock()
-
 		s.manifest.Files = append(s.manifest.Files, domain.ManifestFile{
 			FilePath: job.Path,
 			FileHash: contentHash,
 		})
+		s.manifestMu.Unlock()
 	}
 	return nil
 }

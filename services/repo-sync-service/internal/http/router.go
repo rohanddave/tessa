@@ -91,7 +91,14 @@ func (h handler) handleRepoEvent(w http.ResponseWriter, r *http.Request) {
 		ReceivedAt: time.Now().UTC(),
 	}
 
-	h.producer.Produce(&event)
+	if err := h.producer.Produce(&event); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "failed to publish repo event",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, event)
 }
 
 func defaultBranch(branch string) string {
