@@ -54,14 +54,15 @@ func (r *SnapshotStoreRepo) CreateSnapshot(snapshot *domain.Snapshot) (string, e
 	_, err := r.pool.Exec(
 		context.Background(),
 		`
-		INSERT INTO snapshots (id, repo_url, branch, commit_sha, manifest_url)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO snapshots (id, repo_url, branch, commit_sha, manifest_url, change_log_url)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		`,
 		id,
 		snapshot.RepoURL,
 		snapshot.Branch,
 		snapshot.CommitSHA,
 		snapshot.ManifestURL,
+		snapshot.ChangeLogURL,
 	)
 	if err != nil {
 		return "", fmt.Errorf("insert snapshot: %w", err)
@@ -76,7 +77,7 @@ func (r *SnapshotStoreRepo) GetSnapshot(snapshotID string) (*domain.Snapshot, er
 	err := r.pool.QueryRow(
 		context.Background(),
 		`
-		SELECT id, repo_url, branch, commit_sha, manifest_url
+		SELECT id, repo_url, branch, commit_sha, manifest_url, change_log_url
 		FROM snapshots
 		WHERE id = $1
 		`,
@@ -87,6 +88,7 @@ func (r *SnapshotStoreRepo) GetSnapshot(snapshotID string) (*domain.Snapshot, er
 		&snapshot.Branch,
 		&snapshot.CommitSHA,
 		&snapshot.ManifestURL,
+		&snapshot.ChangeLogURL,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -105,7 +107,7 @@ func (r *SnapshotStoreRepo) GetLatestSnapshot(repoURL string) (*domain.Snapshot,
 	err := r.pool.QueryRow(
 		context.Background(),
 		`
-		SELECT id, repo_url, branch, commit_sha, manifest_url
+		SELECT id, repo_url, branch, commit_sha, manifest_url, change_log_url
 		FROM snapshots
 		WHERE repo_url = $1
 		ORDER BY id DESC
@@ -118,6 +120,7 @@ func (r *SnapshotStoreRepo) GetLatestSnapshot(repoURL string) (*domain.Snapshot,
 		&snapshot.Branch,
 		&snapshot.CommitSHA,
 		&snapshot.ManifestURL,
+		&snapshot.ChangeLogURL,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -161,12 +164,24 @@ func (r *SnapshotStoreRepo) ensureSchema(ctx context.Context) error {
 			repo_url TEXT NOT NULL,
 			branch TEXT NOT NULL DEFAULT '',
 			commit_sha TEXT NOT NULL DEFAULT '',
-			manifest_url TEXT NOT NULL
+			manifest_url TEXT NOT NULL,
+			change_log_url TEXT NOT NULL DEFAULT ''
 		)
 		`,
 	)
 	if err != nil {
 		return fmt.Errorf("ensure snapshots schema: %w", err)
+	}
+
+	_, err = r.pool.Exec(
+		ctx,
+		`
+		ALTER TABLE snapshots
+		ADD COLUMN IF NOT EXISTS change_log_url TEXT NOT NULL DEFAULT ''
+		`,
+	)
+	if err != nil {
+		return fmt.Errorf("ensure snapshots change_log_url column: %w", err)
 	}
 
 	return nil

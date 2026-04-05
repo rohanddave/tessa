@@ -33,6 +33,7 @@ type RepoUpdateService struct {
 	manifestMu sync.Mutex
 	manifest   domain.Manifest
 	seenPaths  map[string]struct{}
+	changeLog  domain.ChangeLog
 }
 
 func NewRepoUpdateService(input *RepoUpdateServiceInput, repoRegistryRepo ports.RepoRegistryRepo, dataSourceRepo ports.DataSourceRepo, blobStoreRepo ports.BlobStoreRepo, snapshotStoreRepo ports.SnapshotStoreRepo) *RepoUpdateService {
@@ -53,6 +54,14 @@ func NewRepoUpdateService(input *RepoUpdateServiceInput, repoRegistryRepo ports.
 			Branch:    input.Branch,
 			CommitSHA: input.CommitSHA,
 			Files:     map[string]domain.ManifestFile{},
+		},
+		changeLog: domain.ChangeLog{
+			RepoURL:   input.RepoURL,
+			Branch:    input.Branch,
+			CommitSHA: input.CommitSHA,
+			Created:   []domain.ChangeLogFile{},
+			Updated:   []domain.UpdatedChangeLogFile{},
+			Deleted:   []domain.ChangeLogFile{},
 		},
 	}
 }
@@ -111,6 +120,15 @@ func (s *RepoUpdateService) UpdateRepo() (err error) {
 		CommitSHA: s.commitSHA,
 		Files:     make(map[string]domain.ManifestFile, len(prevManifest.Files)),
 	}
+	s.changeLog = domain.ChangeLog{
+		RepoURL:           s.repoURL,
+		Branch:            s.branch,
+		CommitSHA:         s.commitSHA,
+		PreviousCommitSHA: prevSnapshot.CommitSHA,
+		Created:           []domain.ChangeLogFile{},
+		Updated:           []domain.UpdatedChangeLogFile{},
+		Deleted:           []domain.ChangeLogFile{},
+	}
 
 	for path, file := range prevManifest.Files {
 		s.manifest.Files[path] = file
@@ -148,8 +166,13 @@ func (s *RepoUpdateService) UpdateRepo() (err error) {
 		}
 	}
 
-	for path := range s.manifest.Files {
+	for path, file := range s.manifest.Files {
 		if _, seen := s.seenPaths[path]; !seen {
+			s.changeLog.Deleted = append(s.changeLog.Deleted, domain.ChangeLogFile{
+				Path:     path,
+				FileHash: file.FileHash,
+				FileSize: file.FileSize,
+			})
 			delete(s.manifest.Files, path)
 		}
 	}
@@ -158,21 +181,31 @@ func (s *RepoUpdateService) UpdateRepo() (err error) {
 	if err != nil {
 		return err
 	}
+	changeLogBytes, err := json.Marshal(s.changeLog)
+	if err != nil {
+		return err
+	}
 
 	manifestFileName := util.HashString(s.repoURL+s.branch+s.commitSHA) + "_manifest.json"
+	changeLogFileName := util.HashString(s.repoURL+s.branch+s.commitSHA) + "_change_log.json"
 
 	// create a manifest file and insert into blob store
 	manifestURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+manifestFileName, manifestBytes)
 	if err != nil {
 		return err
 	}
+	changeLogURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+changeLogFileName, changeLogBytes)
+	if err != nil {
+		return err
+	}
 
 	// create snapshot in snapshot store with urls of the manifest and raw files in blob store
 	_, err = s.snapshotStoreRepo.CreateSnapshot(&domain.Snapshot{
-		RepoURL:     s.repoURL,
-		Branch:      s.branch,
-		CommitSHA:   s.commitSHA,
-		ManifestURL: manifestURL,
+		RepoURL:      s.repoURL,
+		Branch:       s.branch,
+		CommitSHA:    s.commitSHA,
+		ManifestURL:  manifestURL,
+		ChangeLogURL: changeLogURL,
 	})
 
 	if err != nil {
@@ -239,6 +272,22 @@ func (s *RepoUpdateService) processFileJobsAndAttachToManifest(jobs <-chan FileJ
 			s.manifest.Files[job.Path] = newFile
 			s.manifestMu.Unlock()
 			continue
+		}
+
+		if exists {
+			s.changeLog.Updated = append(s.changeLog.Updated, domain.UpdatedChangeLogFile{
+				Path:        job.Path,
+				OldFileHash: prevFile.FileHash,
+				OldFileSize: prevFile.FileSize,
+				NewFileHash: newFile.FileHash,
+				NewFileSize: newFile.FileSize,
+			})
+		} else {
+			s.changeLog.Created = append(s.changeLog.Created, domain.ChangeLogFile{
+				Path:     job.Path,
+				FileHash: newFile.FileHash,
+				FileSize: newFile.FileSize,
+			})
 		}
 
 		// new or changed

@@ -127,10 +127,11 @@ func (s *RegisterRepoService) RegisterRepo() (err error) {
 
 	// create snapshot in snapshot store with urls of the manifest and raw files in blob store
 	_, err = s.snapshotStoreRepo.CreateSnapshot(&domain.Snapshot{
-		RepoURL:     s.repoURL,
-		Branch:      s.branch,
-		CommitSHA:   s.commitSHA,
-		ManifestURL: manifestURL,
+		RepoURL:      s.repoURL,
+		Branch:       s.branch,
+		CommitSHA:    s.commitSHA,
+		ManifestURL:  manifestURL,
+		ChangeLogURL: "",
 	})
 
 	if err != nil {
