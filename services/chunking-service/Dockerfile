@@ -21,6 +21,6 @@ WORKDIR /app
 
 COPY --from=builder /bin/chunking-service-consumer /usr/local/bin/chunking-service-consumer
 
-EXPOSE 8082
-
 USER appuser
+
+CMD ["chunking-service-consumer"]

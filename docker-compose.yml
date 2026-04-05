@@ -175,12 +175,10 @@ services:
   chunking-service:
     <<: *chunking-service-common
     container_name: chunking-service
+    command: ["chunking-service-consumer"]
     environment:
       <<: *chunking-service-environment
       SERVICE_NAME: chunking-service
-      PORT: 8082
-    ports:
-      - "8082:8082"
 
 networks:
   tessa-net:
