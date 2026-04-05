@@ -8,10 +8,10 @@ import (
 	"syscall"
 	"time"
 
+	sharedblobstore "github.com/rohandave/tessa-rag/services/shared/blobstore"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/config"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/github"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/kafka"
-	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/minio"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/postgres"
 	reposync "github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
@@ -41,7 +41,14 @@ func main() {
 		logger.Fatalf("failed to create snapshot store repo: %v", err)
 	}
 
-	blobStoreRepo, err := minio.NewBlobStoreRepo(cfg.Storage)
+	blobStoreRepo, err := sharedblobstore.NewRepo(sharedblobstore.Config{
+		Endpoint:        cfg.Storage.Endpoint,
+		Region:          cfg.Storage.Region,
+		Bucket:          cfg.Storage.Bucket,
+		AccessKeyID:     cfg.Storage.AccessKeyID,
+		SecretAccessKey: cfg.Storage.SecretAccessKey,
+		UseSSL:          cfg.Storage.UseSSL,
+	})
 	if err != nil {
 		logger.Fatalf("failed to create blob store repo: %v", err)
 	}

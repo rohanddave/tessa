@@ -1,4 +1,4 @@
-package minio
+package blobstore
 
 import (
 	"bytes"
@@ -12,18 +12,25 @@ import (
 
 	miniosdk "github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
-	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/config"
-	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
 )
 
-type BlobStoreRepo struct {
+type Config struct {
+	Endpoint        string
+	Region          string
+	Bucket          string
+	AccessKeyID     string
+	SecretAccessKey string
+	UseSSL          string
+}
+
+type Repo struct {
 	client   *miniosdk.Client
 	endpoint string
 	bucket   string
 	useSSL   bool
 }
 
-func NewBlobStoreRepo(cfg config.StorageConfig) (ports.BlobStoreRepo, error) {
+func NewRepo(cfg Config) (*Repo, error) {
 	useSSL := strings.EqualFold(cfg.UseSSL, "true")
 
 	client, err := miniosdk.New(cfg.Endpoint, &miniosdk.Options{
@@ -35,7 +42,7 @@ func NewBlobStoreRepo(cfg config.StorageConfig) (ports.BlobStoreRepo, error) {
 		return nil, fmt.Errorf("create minio client: %w", err)
 	}
 
-	return &BlobStoreRepo{
+	return &Repo{
 		client:   client,
 		endpoint: cfg.Endpoint,
 		bucket:   cfg.Bucket,
@@ -43,7 +50,7 @@ func NewBlobStoreRepo(cfg config.StorageConfig) (ports.BlobStoreRepo, error) {
 	}, nil
 }
 
-func (r *BlobStoreRepo) InsertFile(filePath string, content []byte) (string, error) {
+func (r *Repo) InsertFile(filePath string, content []byte) (string, error) {
 	objectKey := normalizeObjectKey(filePath)
 	contentType := detectContentType(objectKey)
 
@@ -64,7 +71,7 @@ func (r *BlobStoreRepo) InsertFile(filePath string, content []byte) (string, err
 	return r.objectURL(objectKey), nil
 }
 
-func (r *BlobStoreRepo) GetFile(fileURL string) ([]byte, error) {
+func (r *Repo) GetFile(fileURL string) ([]byte, error) {
 	objectKey, err := r.resolveObjectKey(fileURL)
 	if err != nil {
 		return nil, err
@@ -84,7 +91,7 @@ func (r *BlobStoreRepo) GetFile(fileURL string) ([]byte, error) {
 	return content, nil
 }
 
-func (r *BlobStoreRepo) RemoveFile(fileURL string) error {
+func (r *Repo) RemoveFile(fileURL string) error {
 	objectKey, err := r.resolveObjectKey(fileURL)
 	if err != nil {
 		return err
@@ -98,7 +105,7 @@ func (r *BlobStoreRepo) RemoveFile(fileURL string) error {
 	return nil
 }
 
-func (r *BlobStoreRepo) RemoveDirectory(directory string) error {
+func (r *Repo) RemoveDirectory(directory string) error {
 	prefix, err := r.resolveObjectKey(directory)
 	if err != nil {
 		return err
@@ -129,7 +136,7 @@ func (r *BlobStoreRepo) RemoveDirectory(directory string) error {
 	return nil
 }
 
-func (r *BlobStoreRepo) resolveObjectKey(fileURL string) (string, error) {
+func (r *Repo) resolveObjectKey(fileURL string) (string, error) {
 	if fileURL == "" {
 		return "", fmt.Errorf("file url cannot be empty")
 	}
@@ -152,7 +159,7 @@ func (r *BlobStoreRepo) resolveObjectKey(fileURL string) (string, error) {
 	return normalizeObjectKey(objectKey), nil
 }
 
-func (r *BlobStoreRepo) objectURL(objectKey string) string {
+func (r *Repo) objectURL(objectKey string) string {
 	scheme := "http"
 	if r.useSSL {
 		scheme = "https"

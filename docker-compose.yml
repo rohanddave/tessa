@@ -16,10 +16,20 @@ x-repo-sync-service-environment: &repo-sync-service-environment
   S3_SECRET_ACCESS_KEY: minioadmin
   S3_USE_SSL: "false"
 
+x-chunking-service-environment: &chunking-service-environment
+  SERVICE_NAME: chunking-service
+  S3_ENDPOINT: minio:9000
+  S3_REGION: us-east-1
+  S3_BUCKET: repo-sync
+  S3_ACCESS_KEY_ID: minioadmin
+  S3_SECRET_ACCESS_KEY: minioadmin
+  S3_USE_SSL: "false"
+
 x-repo-sync-service-common: &repo-sync-service-common
   image: repo-sync-service:local
   build:
-    context: ./services/repo-sync-service
+    context: ./services
+    dockerfile: repo-sync-service/Dockerfile
   depends_on:
     kafka:
       condition: service_healthy
@@ -28,6 +38,22 @@ x-repo-sync-service-common: &repo-sync-service-common
     minio-init:
       condition: service_completed_successfully
   environment: *repo-sync-service-environment
+  networks:
+    - tessa-net
+
+x-chunking-service-common: &chunking-service-common
+  image: chunking-service:local
+  build:
+    context: ./services
+    dockerfile: chunking-service/Dockerfile
+  depends_on:
+    kafka:
+      condition: service_healthy
+    minio:
+      condition: service_started
+    minio-init:
+      condition: service_completed_successfully
+  environment: *chunking-service-environment
   networks:
     - tessa-net
 
@@ -145,6 +171,16 @@ services:
     <<: *repo-sync-service-common
     container_name: repo-sync-service-consumer
     command: ["repo-sync-service-consumer"]
+
+  chunking-service:
+    <<: *chunking-service-common
+    container_name: chunking-service
+    environment:
+      <<: *chunking-service-environment
+      SERVICE_NAME: chunking-service
+      PORT: 8082
+    ports:
+      - "8082:8082"
 
 networks:
   tessa-net:
