@@ -1,0 +1,172 @@
+package kafka
+
+import (
+	"encoding/json"
+	"fmt"
+	"time"
+
+	cfkafka "github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync"
+	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/util"
+)
+
+type KafkaProducerConfig struct {
+	Brokers string
+}
+
+type Producer interface {
+	Produce(*sync.RepoEvent) error
+
+	Close()
+}
+
+type KafkaProducerAdapter struct {
+	config   *KafkaProducerConfig
+	producer *cfkafka.Producer
+}
+
+func NewKafkaProducer(config *KafkaProducerConfig) Producer {
+	p, err := cfkafka.NewProducer(&cfkafka.ConfigMap{
+		"bootstrap.servers": config.Brokers,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return &KafkaProducerAdapter{config: config, producer: p}
+}
+
+func (p *KafkaProducerAdapter) getTopic(_ *sync.RepoEvent) (string, error) {
+	return util.EnvOrDefault("KAFKA_EVENTS_TOPIC", "repo-sync.repo-events"), nil
+}
+
+func (p *KafkaProducerAdapter) getPartitionKey(event *sync.RepoEvent) (string, error) {
+	// Use repo URL as partition key to ensure events for the same repo go to the same partition
+	return event.RepoURL, nil
+}
+
+func (p *KafkaProducerAdapter) Produce(event *sync.RepoEvent) error {
+	topic, err := p.getTopic(event)
+	if err != nil {
+		return err
+	}
+
+	partitionKey, err := p.getPartitionKey(event)
+	if err != nil {
+		return err
+	}
+
+	value, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+
+	deliveryChan := make(chan cfkafka.Event, 1)
+	defer close(deliveryChan)
+
+	err = p.producer.Produce(&cfkafka.Message{
+		TopicPartition: cfkafka.TopicPartition{Topic: &topic, Partition: cfkafka.PartitionAny},
+		Key:            []byte(partitionKey),
+		Value:          value,
+	}, deliveryChan)
+	if err != nil {
+		return err
+	}
+
+	deliveryEvent := <-deliveryChan
+	deliveredMessage, ok := deliveryEvent.(*cfkafka.Message)
+	if !ok {
+		return fmt.Errorf("unexpected kafka delivery event type %T", deliveryEvent)
+	}
+
+	if deliveredMessage.TopicPartition.Error != nil {
+		return deliveredMessage.TopicPartition.Error
+	}
+
+	return nil
+}
+
+func (p *KafkaProducerAdapter) Close() {
+	p.producer.Close()
+}
+
+type KafkaConsumerConfig struct {
+	Brokers string
+	GroupId string
+}
+
+type Message struct {
+	event *sync.RepoEvent
+	raw   *cfkafka.Message
+}
+
+func (m *Message) Event() *sync.RepoEvent {
+	if m == nil {
+		return nil
+	}
+
+	return m.event
+}
+
+type Consumer interface {
+	SubscribeTopics(topics []string) error
+
+	ReadMessage(timeout time.Duration) (*Message, error)
+	CommitMessage(message *Message) error
+
+	Close()
+}
+
+type KafkaConsumerAdapter struct {
+	config   *KafkaConsumerConfig
+	consumer *cfkafka.Consumer
+}
+
+func NewKafkaConsumer(config *KafkaConsumerConfig) Consumer {
+	c, err := cfkafka.NewConsumer(&cfkafka.ConfigMap{
+		"bootstrap.servers":  config.Brokers,
+		"group.id":           config.GroupId,
+		"auto.offset.reset":  "earliest",
+		"enable.auto.commit": false,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return &KafkaConsumerAdapter{config: config, consumer: c}
+}
+
+func (c *KafkaConsumerAdapter) SubscribeTopics(topics []string) error {
+	return c.consumer.SubscribeTopics(topics, nil)
+}
+
+func (c *KafkaConsumerAdapter) ReadMessage(timeout time.Duration) (*Message, error) {
+	msg, err := c.consumer.ReadMessage(timeout)
+	if err != nil {
+		if kafkaErr, ok := err.(cfkafka.Error); ok && kafkaErr.Code() == cfkafka.ErrTimedOut {
+			return nil, nil // No message received within timeout, return nil without error
+		}
+		return nil, err
+	}
+
+	var event sync.RepoEvent
+	if err := json.Unmarshal(msg.Value, &event); err != nil {
+		return nil, err
+	}
+
+	return &Message{
+		event: &event,
+		raw:   msg,
+	}, nil
+}
+
+func (c *KafkaConsumerAdapter) CommitMessage(message *Message) error {
+	if message == nil || message.raw == nil {
+		return fmt.Errorf("message cannot be nil")
+	}
+
+	_, err := c.consumer.CommitMessage(message.raw)
+	return err
+}
+
+func (c *KafkaConsumerAdapter) Close() {
+	c.consumer.Close()
+}
