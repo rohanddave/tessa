@@ -7,6 +7,7 @@ import (
 	"io"
 	"sync"
 
+	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/domain"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/util"
@@ -66,14 +67,14 @@ func NewRepoUpdateService(input *RepoUpdateServiceInput, repoRegistryRepo ports.
 	}
 }
 
-func (s *RepoUpdateService) UpdateRepo() (err error) {
+func (s *RepoUpdateService) UpdateRepo() (snapshot *shareddomain.Snapshot, err error) {
 	// check if state is registered for this repo
 	updateAllowed, err := s.repoRegistryRepo.TryUpdateRepo(s.repoURL, s.branch)
 	if err != nil {
-		return fmt.Errorf("try update repo for %q: %w", s.repoURL, err)
+		return nil, fmt.Errorf("try update repo for %q: %w", s.repoURL, err)
 	}
 	if !updateAllowed {
-		return fmt.Errorf("cannot update repo for %q: not in registered state", s.repoURL)
+		return nil, fmt.Errorf("cannot update repo for %q: not in registered state", s.repoURL)
 	}
 
 	defer func() {
@@ -89,26 +90,26 @@ func (s *RepoUpdateService) UpdateRepo() (err error) {
 
 	prevSnapshot, err := s.snapshotStoreRepo.GetLatestSnapshot(s.repoURL)
 	if err != nil {
-		return fmt.Errorf("get latest snapshot for %q: %w", s.repoURL, err)
+		return nil, fmt.Errorf("get latest snapshot for %q: %w", s.repoURL, err)
 	}
 
 	if prevSnapshot == nil {
-		return fmt.Errorf("no previous snapshot found for repo %q, cannot perform update", s.repoURL)
+		return nil, fmt.Errorf("no previous snapshot found for repo %q, cannot perform update", s.repoURL)
 	}
 
 	if prevSnapshot.CommitSHA == s.commitSHA {
 		// no update needed
-		return nil
+		return nil, nil
 	}
 
 	prevManifestBytes, err := s.blobStoreRepo.GetFile(prevSnapshot.ManifestURL)
 	if err != nil {
-		return fmt.Errorf("get manifest from blob store for %q: %w", s.repoURL, err)
+		return nil, fmt.Errorf("get manifest from blob store for %q: %w", s.repoURL, err)
 	}
 
 	var prevManifest domain.Manifest
 	if err := json.Unmarshal(prevManifestBytes, &prevManifest); err != nil {
-		return fmt.Errorf("unmarshal previous manifest for %q: %w", s.repoURL, err)
+		return nil, fmt.Errorf("unmarshal previous manifest for %q: %w", s.repoURL, err)
 	}
 
 	s.seenPaths = make(map[string]struct{}, len(prevManifest.Files))
@@ -156,13 +157,13 @@ func (s *RepoUpdateService) UpdateRepo() (err error) {
 
 	if streamErr != nil {
 		err = streamErr
-		return err
+		return nil, err
 	}
 
 	for workerErr := range workerErrors {
 		if workerErr != nil {
 			err = workerErr
-			return err
+			return nil, err
 		}
 	}
 
@@ -179,11 +180,11 @@ func (s *RepoUpdateService) UpdateRepo() (err error) {
 
 	manifestBytes, err := json.Marshal(s.manifest)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	changeLogBytes, err := json.Marshal(s.changeLog)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	manifestFileName := util.HashString(s.repoURL+s.branch+s.commitSHA) + "_manifest.json"
@@ -192,28 +193,34 @@ func (s *RepoUpdateService) UpdateRepo() (err error) {
 	// create a manifest file and insert into blob store
 	manifestURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+manifestFileName, manifestBytes)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	changeLogURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+changeLogFileName, changeLogBytes)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// create snapshot in snapshot store with urls of the manifest and raw files in blob store
-	_, err = s.snapshotStoreRepo.CreateSnapshot(&domain.Snapshot{
+	snapshot = &shareddomain.Snapshot{
 		RepoURL:      s.repoURL,
 		Branch:       s.branch,
 		CommitSHA:    s.commitSHA,
 		ManifestURL:  manifestURL,
 		ChangeLogURL: changeLogURL,
-	})
-
-	if err != nil {
-		return err
 	}
 
+	snapshotId, err := s.snapshotStoreRepo.CreateSnapshot(snapshot)
+
+	if err != nil {
+		return nil, err
+	}
+
+	snapshot.Id = snapshotId
+
+	// mark repo registry state as updated
 	err = s.repoRegistryRepo.MarkUpdated(s.repoURL, s.commitSHA)
-	return err
+
+	return snapshot, err
 }
 
 func (s *RepoUpdateService) streamRepoFiles(jobs chan<- FileJob) error {

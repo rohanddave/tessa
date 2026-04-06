@@ -8,8 +8,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/config"
-	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/domain"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
 )
 
@@ -45,7 +45,7 @@ func NewSnapshotStoreRepo(ctx context.Context, cfg config.DatabaseConfig) (ports
 	return repo, nil
 }
 
-func (r *SnapshotStoreRepo) CreateSnapshot(snapshot *domain.Snapshot) (string, error) {
+func (r *SnapshotStoreRepo) CreateSnapshot(snapshot *shareddomain.Snapshot) (string, error) {
 	id := snapshot.Id
 	if id == "" {
 		id = uuid.NewString()
@@ -71,8 +71,8 @@ func (r *SnapshotStoreRepo) CreateSnapshot(snapshot *domain.Snapshot) (string, e
 	return id, nil
 }
 
-func (r *SnapshotStoreRepo) GetSnapshot(snapshotID string) (*domain.Snapshot, error) {
-	var snapshot domain.Snapshot
+func (r *SnapshotStoreRepo) GetSnapshot(snapshotID string) (*shareddomain.Snapshot, error) {
+	var snapshot shareddomain.Snapshot
 
 	err := r.pool.QueryRow(
 		context.Background(),
@@ -101,8 +101,8 @@ func (r *SnapshotStoreRepo) GetSnapshot(snapshotID string) (*domain.Snapshot, er
 	return &snapshot, nil
 }
 
-func (r *SnapshotStoreRepo) GetLatestSnapshot(repoURL string) (*domain.Snapshot, error) {
-	var snapshot domain.Snapshot
+func (r *SnapshotStoreRepo) GetLatestSnapshot(repoURL string) (*shareddomain.Snapshot, error) {
+	var snapshot shareddomain.Snapshot
 
 	err := r.pool.QueryRow(
 		context.Background(),

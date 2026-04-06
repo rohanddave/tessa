@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"net/url"
+	"os"
 	"path"
 	"strings"
 
@@ -30,7 +31,19 @@ type Repo struct {
 	useSSL   bool
 }
 
-func NewRepo(cfg Config) (*Repo, error) {
+func LoadConfig() Config {
+	return Config{
+		Endpoint:        envOrDefault("S3_ENDPOINT", "localhost:9000"),
+		Region:          envOrDefault("S3_REGION", "us-east-1"),
+		Bucket:          envOrDefault("S3_BUCKET", "repo-sync"),
+		AccessKeyID:     envOrDefault("S3_ACCESS_KEY_ID", "minioadmin"),
+		SecretAccessKey: envOrDefault("S3_SECRET_ACCESS_KEY", "minioadmin"),
+		UseSSL:          envOrDefault("S3_USE_SSL", "false"),
+	}
+}
+
+func NewRepo() (*Repo, error) {
+	cfg := LoadConfig()
 	useSSL := strings.EqualFold(cfg.UseSSL, "true")
 
 	client, err := miniosdk.New(cfg.Endpoint, &miniosdk.Options{
@@ -179,4 +192,13 @@ func detectContentType(objectKey string) string {
 	}
 
 	return contentType
+}
+
+func envOrDefault(key, fallback string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+
+	return value
 }

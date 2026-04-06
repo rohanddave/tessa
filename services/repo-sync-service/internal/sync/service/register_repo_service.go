@@ -7,6 +7,7 @@ import (
 	"io"
 	"sync"
 
+	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/domain"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/util"
@@ -38,6 +39,7 @@ type RegisterRepoService struct {
 
 	manifestMu sync.Mutex
 	manifest   domain.Manifest
+	changeLog  domain.ChangeLog
 }
 
 func NewRegisterRepoService(input *RegisterRepoServiceInput, dataSourceRepo ports.DataSourceRepo, snapshotStoreRepo ports.SnapshotStoreRepo, blobStoreRepo ports.BlobStoreRepo, repoRegistryRepo ports.RepoRegistryRepo) *RegisterRepoService {
@@ -57,16 +59,25 @@ func NewRegisterRepoService(input *RegisterRepoServiceInput, dataSourceRepo port
 			CommitSHA: input.CommitSHA,
 			Files:     map[string]domain.ManifestFile{},
 		},
+		changeLog: domain.ChangeLog{
+			RepoURL:           input.RepoURL,
+			Branch:            input.Branch,
+			CommitSHA:         input.CommitSHA,
+			PreviousCommitSHA: "",
+			Created:           []domain.ChangeLogFile{},
+			Updated:           []domain.UpdatedChangeLogFile{},
+			Deleted:           []domain.ChangeLogFile{},
+		},
 	}
 }
 
-func (s *RegisterRepoService) RegisterRepo() (err error) {
+func (s *RegisterRepoService) RegisterRepo() (snapshot *shareddomain.Snapshot, err error) {
 	started, err := s.repoRegistryRepo.TryStartRegistration(s.repoURL, s.branch, s.commitSHA)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !started {
-		return fmt.Errorf("repo registration already in progress or repo is not eligible for registration: %s", s.repoURL)
+		return nil, fmt.Errorf("repo registration already in progress or repo is not eligible for registration: %s", s.repoURL)
 	}
 
 	defer func() {
@@ -102,44 +113,59 @@ func (s *RegisterRepoService) RegisterRepo() (err error) {
 
 	if streamErr != nil {
 		err = streamErr
-		return err
+		return nil, err
 	}
 
 	for workerErr := range workerErrors {
 		if workerErr != nil {
 			err = workerErr
-			return err
+			return nil, err
 		}
 	}
 
 	manifestBytes, err := json.Marshal(s.manifest)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	changeLogBytes, err := json.Marshal(s.buildInitialChangeLog())
+	if err != nil {
+		return nil, err
 	}
 
 	manifestFileName := util.HashString(s.repoURL+s.branch+s.commitSHA) + "_manifest.json"
+	changeLogFileName := util.HashString(s.repoURL+s.branch+s.commitSHA) + "_change_log.json"
 
 	// create a manifest file and insert into blob store
 	manifestURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+manifestFileName, manifestBytes)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	changeLogURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+changeLogFileName, changeLogBytes)
+	if err != nil {
+		return nil, err
 	}
 
 	// create snapshot in snapshot store with urls of the manifest and raw files in blob store
-	_, err = s.snapshotStoreRepo.CreateSnapshot(&domain.Snapshot{
+	snapshot = &shareddomain.Snapshot{
 		RepoURL:      s.repoURL,
 		Branch:       s.branch,
 		CommitSHA:    s.commitSHA,
 		ManifestURL:  manifestURL,
-		ChangeLogURL: "",
-	})
-
-	if err != nil {
-		return err
+		ChangeLogURL: changeLogURL,
 	}
 
+	snapshotId, err := s.snapshotStoreRepo.CreateSnapshot(snapshot)
+
+	if err != nil {
+		return nil, err
+	}
+
+	snapshot.Id = snapshotId
+
+	// mark repo registry state as registered
 	err = s.repoRegistryRepo.MarkRegistered(s.repoURL)
-	return err
+
+	return snapshot, err
 }
 
 func (s *RegisterRepoService) streamRepoFiles(jobs chan<- FileJob) error {
@@ -197,4 +223,21 @@ func (s *RegisterRepoService) processFileJobsAndAttachToManifest(jobs <-chan Fil
 		s.manifestMu.Unlock()
 	}
 	return nil
+}
+
+func (s *RegisterRepoService) buildInitialChangeLog() domain.ChangeLog {
+	s.manifestMu.Lock()
+	defer s.manifestMu.Unlock()
+
+	created := make([]domain.ChangeLogFile, 0, len(s.manifest.Files))
+	for path, file := range s.manifest.Files {
+		created = append(created, domain.ChangeLogFile{
+			Path:     path,
+			FileHash: file.FileHash,
+			FileSize: file.FileSize,
+		})
+	}
+
+	s.changeLog.Created = created
+	return s.changeLog
 }

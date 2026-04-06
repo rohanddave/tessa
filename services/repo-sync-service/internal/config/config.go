@@ -2,21 +2,18 @@ package config
 
 import (
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/util"
+	sharedstorage "github.com/rohandave/tessa-rag/services/shared/blobstore"
+	sharedkafka "github.com/rohandave/tessa-rag/services/shared/kafka"
 )
 
 type Config struct {
 	ServiceName string
 	Port        string
 	LogLevel    string
-	Kafka       KafkaConfig
+	Kafka       sharedkafka.Config
 	GitHub      GitHubConfig
 	Database    DatabaseConfig
-	Storage     StorageConfig
-}
-
-type KafkaConfig struct {
-	Brokers     string
-	EventsTopic string
+	Storage     sharedstorage.Config
 }
 
 type GitHubConfig struct {
@@ -32,24 +29,12 @@ type DatabaseConfig struct {
 	SSLMode  string
 }
 
-type StorageConfig struct {
-	Endpoint        string
-	Region          string
-	Bucket          string
-	AccessKeyID     string
-	SecretAccessKey string
-	UseSSL          string
-}
-
 func Load() Config {
 	return Config{
 		ServiceName: util.EnvOrDefault("SERVICE_NAME", "repo-sync-service"),
 		Port:        util.EnvOrDefault("PORT", "8081"),
 		LogLevel:    util.EnvOrDefault("LOG_LEVEL", "info"),
-		Kafka: KafkaConfig{
-			Brokers:     util.EnvOrDefault("KAFKA_BROKERS", "localhost:19092"),
-			EventsTopic: util.EnvOrDefault("KAFKA_EVENTS_TOPIC", "repo-sync.repo-events"),
-		},
+		Kafka:       sharedkafka.LoadConfig(),
 		GitHub: GitHubConfig{
 			Token: util.EnvOrDefault("GITHUB_TOKEN", ""),
 		},
@@ -61,13 +46,6 @@ func Load() Config {
 			Password: util.EnvOrDefault("SNAPSHOT_STORE_PASSWORD", "postgres"),
 			SSLMode:  util.EnvOrDefault("SNAPSHOT_STORE_SSLMODE", "disable"),
 		},
-		Storage: StorageConfig{
-			Endpoint:        util.EnvOrDefault("S3_ENDPOINT", "localhost:9000"),
-			Region:          util.EnvOrDefault("S3_REGION", "us-east-1"),
-			Bucket:          util.EnvOrDefault("S3_BUCKET", "repo-sync"),
-			AccessKeyID:     util.EnvOrDefault("S3_ACCESS_KEY_ID", "minioadmin"),
-			SecretAccessKey: util.EnvOrDefault("S3_SECRET_ACCESS_KEY", "minioadmin"),
-			UseSSL:          util.EnvOrDefault("S3_USE_SSL", "false"),
-		},
+		Storage: sharedstorage.LoadConfig(),
 	}
 }

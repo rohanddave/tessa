@@ -3,6 +3,7 @@ module github.com/rohandave/tessa-rag/services/chunking-service
 go 1.25.0
 
 require (
+	github.com/confluentinc/confluent-kafka-go/v2 v2.13.3
 	github.com/rohandave/tessa-rag/services/shared v0.0.0
 	github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82
 )

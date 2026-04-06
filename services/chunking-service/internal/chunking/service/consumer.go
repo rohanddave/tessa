@@ -3,27 +3,20 @@ package service
 import (
 	"log"
 
+	"github.com/rohandave/tessa-rag/services/chunking-service/internal/chunking/ports"
 	sharedblobstore "github.com/rohandave/tessa-rag/services/shared/blobstore"
-	sitter "github.com/smacker/go-tree-sitter"
 )
 
 type Consumer struct {
 	logger        *log.Logger
 	blobStoreRepo *sharedblobstore.Repo
+	codeParser    ports.CodeParser
 }
 
-func NewConsumer(logger *log.Logger) *Consumer {
-	return &Consumer{logger: logger}
+func NewConsumer(logger *log.Logger, blobStoreRepo *sharedblobstore.Repo, codeParser ports.CodeParser) *Consumer {
+	return &Consumer{logger: logger, blobStoreRepo: blobStoreRepo, codeParser: codeParser}
 }
 
-func (c *Consumer) SetBlobStoreRepo(blobStoreRepo *sharedblobstore.Repo) {
-	c.blobStoreRepo = blobStoreRepo
-}
-
-func (c *Consumer) DescribeParser() {
-	parser := sitter.NewParser()
-	defer parser.Close()
-
-	c.logger.Printf("tree-sitter parser initialized: %t", parser != nil)
-	c.logger.Printf("blob store repo initialized: %t", c.blobStoreRepo != nil)
+func (c *Consumer) Start() {
+	c.logger.Printf("Starting consumer with code parser: %s", c.codeParser.DescribeParser())
 }

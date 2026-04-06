@@ -3,13 +3,13 @@ module github.com/rohandave/tessa-rag/services/repo-sync-service
 go 1.25.0
 
 require (
-	github.com/confluentinc/confluent-kafka-go/v2 v2.13.3
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.1
 	github.com/rohandave/tessa-rag/services/shared v0.0.0
 )
 
 require (
+	github.com/confluentinc/confluent-kafka-go/v2 v2.13.3 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-ini/ini v1.67.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
