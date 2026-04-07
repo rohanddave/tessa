@@ -34,7 +34,7 @@ type RepoUpdateService struct {
 	manifestMu sync.Mutex
 	manifest   domain.Manifest
 	seenPaths  map[string]struct{}
-	changeLog  domain.ChangeLog
+	changeLog  shareddomain.ChangeLog
 }
 
 func NewRepoUpdateService(input *RepoUpdateServiceInput, repoRegistryRepo ports.RepoRegistryRepo, dataSourceRepo ports.DataSourceRepo, blobStoreRepo ports.BlobStoreRepo, snapshotStoreRepo ports.SnapshotStoreRepo) *RepoUpdateService {
@@ -56,13 +56,13 @@ func NewRepoUpdateService(input *RepoUpdateServiceInput, repoRegistryRepo ports.
 			CommitSHA: input.CommitSHA,
 			Files:     map[string]domain.ManifestFile{},
 		},
-		changeLog: domain.ChangeLog{
+		changeLog: shareddomain.ChangeLog{
 			RepoURL:   input.RepoURL,
 			Branch:    input.Branch,
 			CommitSHA: input.CommitSHA,
-			Created:   []domain.ChangeLogFile{},
-			Updated:   []domain.UpdatedChangeLogFile{},
-			Deleted:   []domain.ChangeLogFile{},
+			Created:   []shareddomain.ChangeLogFile{},
+			Updated:   []shareddomain.UpdatedChangeLogFile{},
+			Deleted:   []shareddomain.ChangeLogFile{},
 		},
 	}
 }
@@ -121,21 +121,21 @@ func (s *RepoUpdateService) UpdateRepo() (snapshot *shareddomain.Snapshot, err e
 		CommitSHA: s.commitSHA,
 		Files:     make(map[string]domain.ManifestFile, len(prevManifest.Files)),
 	}
-	s.changeLog = domain.ChangeLog{
+	s.changeLog = shareddomain.ChangeLog{
 		RepoURL:           s.repoURL,
 		Branch:            s.branch,
 		CommitSHA:         s.commitSHA,
 		PreviousCommitSHA: prevSnapshot.CommitSHA,
-		Created:           []domain.ChangeLogFile{},
-		Updated:           []domain.UpdatedChangeLogFile{},
-		Deleted:           []domain.ChangeLogFile{},
+		Created:           []shareddomain.ChangeLogFile{},
+		Updated:           []shareddomain.UpdatedChangeLogFile{},
+		Deleted:           []shareddomain.ChangeLogFile{},
 	}
 
 	for path, file := range prevManifest.Files {
 		s.manifest.Files[path] = file
 	}
 
-	fileJobs := make(chan FileJob)
+	fileJobs := make(chan shareddomain.FileJob)
 	workerErrors := make(chan error, 5)
 
 	var wg sync.WaitGroup
@@ -169,7 +169,7 @@ func (s *RepoUpdateService) UpdateRepo() (snapshot *shareddomain.Snapshot, err e
 
 	for path, file := range s.manifest.Files {
 		if _, seen := s.seenPaths[path]; !seen {
-			s.changeLog.Deleted = append(s.changeLog.Deleted, domain.ChangeLogFile{
+			s.changeLog.Deleted = append(s.changeLog.Deleted, shareddomain.ChangeLogFile{
 				Path:     path,
 				FileHash: file.FileHash,
 				FileSize: file.FileSize,
@@ -223,7 +223,7 @@ func (s *RepoUpdateService) UpdateRepo() (snapshot *shareddomain.Snapshot, err e
 	return snapshot, err
 }
 
-func (s *RepoUpdateService) streamRepoFiles(jobs chan<- FileJob) error {
+func (s *RepoUpdateService) streamRepoFiles(jobs chan<- shareddomain.FileJob) error {
 	// open repo archive stream from data source
 	fileStream, err := s.dataSourceRepo.OpenRepoArchive(ports.OpenRepoFileStreamInput{
 		RepoURL:   s.repoURL,
@@ -251,7 +251,7 @@ func (s *RepoUpdateService) streamRepoFiles(jobs chan<- FileJob) error {
 			return err
 		}
 
-		jobs <- FileJob{
+		jobs <- shareddomain.FileJob{
 			Path:    repoFile.Path,
 			Size:    repoFile.Size,
 			Content: content,
@@ -261,7 +261,7 @@ func (s *RepoUpdateService) streamRepoFiles(jobs chan<- FileJob) error {
 	return nil
 }
 
-func (s *RepoUpdateService) processFileJobsAndAttachToManifest(jobs <-chan FileJob) error {
+func (s *RepoUpdateService) processFileJobsAndAttachToManifest(jobs <-chan shareddomain.FileJob) error {
 	for job := range jobs {
 		// insert file content into blob store and get the url
 		contentHash := util.HashContent(job.Content)
@@ -282,7 +282,7 @@ func (s *RepoUpdateService) processFileJobsAndAttachToManifest(jobs <-chan FileJ
 		}
 
 		if exists {
-			s.changeLog.Updated = append(s.changeLog.Updated, domain.UpdatedChangeLogFile{
+			s.changeLog.Updated = append(s.changeLog.Updated, shareddomain.UpdatedChangeLogFile{
 				Path:        job.Path,
 				OldFileHash: prevFile.FileHash,
 				OldFileSize: prevFile.FileSize,
@@ -290,7 +290,7 @@ func (s *RepoUpdateService) processFileJobsAndAttachToManifest(jobs <-chan FileJ
 				NewFileSize: newFile.FileSize,
 			})
 		} else {
-			s.changeLog.Created = append(s.changeLog.Created, domain.ChangeLogFile{
+			s.changeLog.Created = append(s.changeLog.Created, shareddomain.ChangeLogFile{
 				Path:     job.Path,
 				FileHash: newFile.FileHash,
 				FileSize: newFile.FileSize,

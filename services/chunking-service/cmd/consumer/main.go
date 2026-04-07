@@ -1,16 +1,18 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	ports "github.com/rohandave/tessa-rag/services/chunking-service/internal/chunking/ports"
+	"github.com/rohandave/tessa-rag/services/chunking-service/internal/chunking/service"
 	"github.com/rohandave/tessa-rag/services/chunking-service/internal/config"
 	treesitter "github.com/rohandave/tessa-rag/services/chunking-service/internal/tree-sitter"
 	sharedblobstore "github.com/rohandave/tessa-rag/services/shared/blobstore"
+	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
 	sharedkafka "github.com/rohandave/tessa-rag/services/shared/kafka"
 )
 
@@ -26,8 +28,18 @@ func main() {
 	}
 
 	codeParser := treesitter.NewTreeSitterRepo()
+	normalizationService := service.NewNormalizationService(&service.NormalizationServiceInput{})
+	extractionService := service.NewExtractionService(&service.ExtractionServiceInput{
+		CodeParser: codeParser,
+	})
+	chunkingService := service.NewChunkingService(&service.ChunkingServiceInput{
+		Logger:               logger,
+		BlobStoreRepo:        blobStoreRepo,
+		NormalizationService: normalizationService,
+		ExtractionService:    extractionService,
+	})
 
-	createAndRunNKafkaConsumers(5, blobStoreRepo, &codeParser, cfg.Kafka.SnapshotsTopic, logger)
+	createAndRunNKafkaConsumers(5, cfg.Kafka.SnapshotsTopic, logger, chunkingService)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
@@ -36,7 +48,7 @@ func main() {
 	logger.Printf("shutting down %s consumer", cfg.ServiceName)
 }
 
-func createAndRunNKafkaConsumers(number int, blobStoreRepo *sharedblobstore.Repo, codeParser *ports.CodeParser, topic string, logger *log.Logger) {
+func createAndRunNKafkaConsumers(number int, topic string, logger *log.Logger, chunkingService *service.ChunkingService) {
 	for i := 0; i < number; i++ {
 		consumer, err := sharedkafka.NewConsumer(&sharedkafka.ConsumerConfig{
 			GroupID: "chunking-service-consumer-group",
@@ -63,7 +75,26 @@ func createAndRunNKafkaConsumers(number int, blobStoreRepo *sharedblobstore.Repo
 					continue
 				}
 
-				logger.Printf("consumer %d processed and message: %s", workerID, message)
+				var snapshot shareddomain.Snapshot
+				if err := json.Unmarshal(message.Value, &snapshot); err != nil {
+					logger.Printf("consumer %d failed to decode snapshot message: %v", workerID, err)
+					continue
+				}
+
+				logger.Printf("consumer %d received snapshot: %s to index", workerID, snapshot.Id)
+
+				_, err = chunkingService.Start(snapshot)
+				if err != nil {
+					logger.Printf("consumer %d failed to process snapshot %s: %v", workerID, snapshot.Id, err)
+					continue
+				}
+
+				if err := consumer.CommitMessage(message); err != nil {
+					logger.Printf("consumer %d failed to commit snapshot %s: %v", workerID, snapshot.Id, err)
+					continue
+				}
+
+				logger.Printf("consumer %d processed and committed snapshot: %s", workerID, snapshot.Id)
 			}
 		}(consumer, i)
 	}

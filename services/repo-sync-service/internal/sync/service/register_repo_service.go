@@ -13,12 +13,6 @@ import (
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/util"
 )
 
-type FileJob struct {
-	Path    string
-	Size    int64
-	Content []byte
-}
-
 type RegisterRepoServiceInput struct {
 	RepoURL   string
 	Branch    string
@@ -39,7 +33,7 @@ type RegisterRepoService struct {
 
 	manifestMu sync.Mutex
 	manifest   domain.Manifest
-	changeLog  domain.ChangeLog
+	changeLog  shareddomain.ChangeLog
 }
 
 func NewRegisterRepoService(input *RegisterRepoServiceInput, dataSourceRepo ports.DataSourceRepo, snapshotStoreRepo ports.SnapshotStoreRepo, blobStoreRepo ports.BlobStoreRepo, repoRegistryRepo ports.RepoRegistryRepo) *RegisterRepoService {
@@ -59,14 +53,14 @@ func NewRegisterRepoService(input *RegisterRepoServiceInput, dataSourceRepo port
 			CommitSHA: input.CommitSHA,
 			Files:     map[string]domain.ManifestFile{},
 		},
-		changeLog: domain.ChangeLog{
+		changeLog: shareddomain.ChangeLog{
 			RepoURL:           input.RepoURL,
 			Branch:            input.Branch,
 			CommitSHA:         input.CommitSHA,
 			PreviousCommitSHA: "",
-			Created:           []domain.ChangeLogFile{},
-			Updated:           []domain.UpdatedChangeLogFile{},
-			Deleted:           []domain.ChangeLogFile{},
+			Created:           []shareddomain.ChangeLogFile{},
+			Updated:           []shareddomain.UpdatedChangeLogFile{},
+			Deleted:           []shareddomain.ChangeLogFile{},
 		},
 	}
 }
@@ -91,7 +85,7 @@ func (s *RegisterRepoService) RegisterRepo() (snapshot *shareddomain.Snapshot, e
 		}
 	}()
 
-	fileJobs := make(chan FileJob)
+	fileJobs := make(chan shareddomain.FileJob)
 	workerErrors := make(chan error, 5)
 
 	var wg sync.WaitGroup
@@ -168,7 +162,7 @@ func (s *RegisterRepoService) RegisterRepo() (snapshot *shareddomain.Snapshot, e
 	return snapshot, err
 }
 
-func (s *RegisterRepoService) streamRepoFiles(jobs chan<- FileJob) error {
+func (s *RegisterRepoService) streamRepoFiles(jobs chan<- shareddomain.FileJob) error {
 	// open repo archive stream from data source
 	fileStream, err := s.dataSourceRepo.OpenRepoArchive(ports.OpenRepoFileStreamInput{
 		RepoURL:   s.repoURL,
@@ -196,7 +190,7 @@ func (s *RegisterRepoService) streamRepoFiles(jobs chan<- FileJob) error {
 			return err
 		}
 
-		jobs <- FileJob{
+		jobs <- shareddomain.FileJob{
 			Path:    repoFile.Path,
 			Size:    repoFile.Size,
 			Content: content,
@@ -206,7 +200,7 @@ func (s *RegisterRepoService) streamRepoFiles(jobs chan<- FileJob) error {
 	return nil
 }
 
-func (s *RegisterRepoService) processFileJobsAndAttachToManifest(jobs <-chan FileJob) error {
+func (s *RegisterRepoService) processFileJobsAndAttachToManifest(jobs <-chan shareddomain.FileJob) error {
 	for job := range jobs {
 		// insert file content into blob store and get the url
 		contentHash := util.HashContent(job.Content)
@@ -225,13 +219,13 @@ func (s *RegisterRepoService) processFileJobsAndAttachToManifest(jobs <-chan Fil
 	return nil
 }
 
-func (s *RegisterRepoService) buildInitialChangeLog() domain.ChangeLog {
+func (s *RegisterRepoService) buildInitialChangeLog() shareddomain.ChangeLog {
 	s.manifestMu.Lock()
 	defer s.manifestMu.Unlock()
 
-	created := make([]domain.ChangeLogFile, 0, len(s.manifest.Files))
+	created := make([]shareddomain.ChangeLogFile, 0, len(s.manifest.Files))
 	for path, file := range s.manifest.Files {
-		created = append(created, domain.ChangeLogFile{
+		created = append(created, shareddomain.ChangeLogFile{
 			Path:     path,
 			FileHash: file.FileHash,
 			FileSize: file.FileSize,

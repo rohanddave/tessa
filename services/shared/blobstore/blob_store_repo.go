@@ -10,9 +10,11 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 
 	miniosdk "github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
 )
 
 type Config struct {
@@ -102,6 +104,64 @@ func (r *Repo) GetFile(fileURL string) ([]byte, error) {
 	}
 
 	return content, nil
+}
+
+func (r *Repo) GetFiles(fileURLs []string, jobs chan<- shareddomain.FileJob, workerCount int) error {
+	if workerCount <= 0 {
+		workerCount = 1
+	}
+
+	if len(fileURLs) == 0 {
+		return nil
+	}
+
+	work := make(chan string, len(fileURLs))
+	errCh := make(chan error, workerCount)
+
+	var wg sync.WaitGroup
+
+	for _, fileURL := range fileURLs {
+		work <- fileURL
+	}
+	close(work)
+
+	for range workerCount {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			for fileURL := range work {
+				content, err := r.GetFile(fileURL)
+				if err != nil {
+					errCh <- fmt.Errorf("get file for url %q: %w", fileURL, err)
+					return
+				}
+
+				objectKey, err := r.resolveObjectKey(fileURL)
+				if err != nil {
+					errCh <- fmt.Errorf("resolve object key for url %q: %w", fileURL, err)
+					return
+				}
+
+				jobs <- shareddomain.FileJob{
+					Path:    objectKey,
+					Size:    int64(len(content)),
+					Content: content,
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (r *Repo) RemoveFile(fileURL string) error {
