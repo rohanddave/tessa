@@ -1,6 +1,7 @@
 package treesitter
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -50,8 +51,15 @@ func (r *TreeSitterRepo) ExtractFileMetadata(fileContent string, language string
 	parser := sitter.NewParser()
 	defer parser.Close()
 
+	if lang == nil {
+		err := fmt.Errorf("tree-sitter language is nil for %q", trimmedLanguage)
+		log.Printf("tree-sitter extraction failed language=%s: %v", trimmedLanguage, err)
+		return nil, err
+	}
+
+	log.Printf("tree-sitter setting language=%s", trimmedLanguage)
 	parser.SetLanguage(lang)
-	tree, err := parser.ParseCtx(nil, nil, source)
+	tree, err := parser.ParseCtx(context.Background(), nil, source)
 	if err != nil {
 		log.Printf("tree-sitter parse failed language=%s: %v", trimmedLanguage, err)
 		return nil, fmt.Errorf("parse file content: %w", err)

@@ -16,6 +16,7 @@ import (
 	"github.com/rohandave/tessa-rag/services/chunking-service/internal/chunking/ports"
 	sharedblobstore "github.com/rohandave/tessa-rag/services/shared/blobstore"
 	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
+	sharedutil "github.com/rohandave/tessa-rag/services/shared/util"
 )
 
 type ChunkingServiceInput struct {
@@ -204,7 +205,7 @@ func (s *ChunkingService) extractionWorker(normalizedFilesChannel <-chan *shared
 
 		contentHash := hashContent(chunkJSON)
 		fileName := fmt.Sprintf("%s_chunk_%s.json", contentHash, chunkID)
-		filePath := blobDirectoryURL + "/" + fileName
+		filePath := sharedutil.HashString(snapshot.RepoURL) + "/" + fileName
 
 		insertedURL, err := s.blobStoreRepo.InsertFile(filePath, chunkJSON, "json")
 		if err != nil {

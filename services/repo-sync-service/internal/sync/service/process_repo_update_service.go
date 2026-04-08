@@ -9,8 +9,8 @@ import (
 
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/domain"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
-	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/util"
 	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
+	sharedutil "github.com/rohandave/tessa-rag/services/shared/util"
 )
 
 type RepoUpdateServiceInput struct {
@@ -46,7 +46,7 @@ func NewRepoUpdateService(input *RepoUpdateServiceInput, repoRegistryRepo ports.
 		repoURL:                input.RepoURL,
 		branch:                 input.Branch,
 		commitSHA:              input.CommitSHA,
-		blobStorageDestination: util.HashString(input.RepoURL),
+		blobStorageDestination: sharedutil.HashString(input.RepoURL),
 
 		seenPaths: make(map[string]struct{}),
 		manifest: domain.Manifest{
@@ -188,8 +188,8 @@ func (s *RepoUpdateService) UpdateRepo() (snapshot *shareddomain.Snapshot, err e
 		return nil, err
 	}
 
-	manifestFileName := util.HashString(s.repoURL+s.branch+s.commitSHA) + "_manifest.json"
-	changeLogFileName := util.HashString(s.repoURL+s.branch+s.commitSHA) + "_change_log.json"
+	manifestFileName := sharedutil.HashString(s.repoURL+s.branch+s.commitSHA) + "_manifest.json"
+	changeLogFileName := sharedutil.HashString(s.repoURL+s.branch+s.commitSHA) + "_change_log.json"
 
 	// create a manifest file and insert into blob store
 	manifestURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+manifestFileName, manifestBytes, "json")
@@ -266,7 +266,7 @@ func (s *RepoUpdateService) streamRepoFiles(jobs chan<- shareddomain.FileJob) er
 func (s *RepoUpdateService) processFileJobsAndAttachToManifest(jobs <-chan shareddomain.FileJob) error {
 	for job := range jobs {
 		// insert file content into blob store and get the url
-		contentHash := util.HashContent(job.Content)
+		contentHash := sharedutil.HashContent(job.Content)
 
 		s.manifestMu.Lock()
 		s.seenPaths[job.Path] = struct{}{}

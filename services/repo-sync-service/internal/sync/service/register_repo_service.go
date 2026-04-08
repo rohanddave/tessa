@@ -9,8 +9,8 @@ import (
 
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/domain"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
-	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/util"
 	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
+	sharedutil "github.com/rohandave/tessa-rag/services/shared/util"
 )
 
 type RegisterRepoServiceInput struct {
@@ -45,7 +45,7 @@ func NewRegisterRepoService(input *RegisterRepoServiceInput, dataSourceRepo port
 		repoURL:                input.RepoURL,
 		branch:                 input.Branch,
 		commitSHA:              input.CommitSHA,
-		blobStorageDestination: util.HashString(input.RepoURL),
+		blobStorageDestination: sharedutil.HashString(input.RepoURL),
 		manifest: domain.Manifest{
 			Id:        "",
 			RepoURL:   input.RepoURL,
@@ -126,8 +126,8 @@ func (s *RegisterRepoService) RegisterRepo() (snapshot *shareddomain.Snapshot, e
 		return nil, err
 	}
 
-	manifestFileName := util.HashString(s.repoURL+s.branch+s.commitSHA) + "_manifest.json"
-	changeLogFileName := util.HashString(s.repoURL+s.branch+s.commitSHA) + "_change_log.json"
+	manifestFileName := sharedutil.HashString(s.repoURL+s.branch+s.commitSHA) + "_manifest.json"
+	changeLogFileName := sharedutil.HashString(s.repoURL+s.branch+s.commitSHA) + "_change_log.json"
 
 	// create a manifest file and insert into blob store
 	manifestURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+manifestFileName, manifestBytes, "json")
@@ -204,7 +204,7 @@ func (s *RegisterRepoService) streamRepoFiles(jobs chan<- shareddomain.FileJob) 
 func (s *RegisterRepoService) processFileJobsAndAttachToManifest(jobs <-chan shareddomain.FileJob) error {
 	for job := range jobs {
 		// insert file content into blob store and get the url
-		contentHash := util.HashContent(job.Content)
+		contentHash := sharedutil.HashContent(job.Content)
 		_, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+contentHash, job.Content, job.Extension)
 		if err != nil {
 			return err
