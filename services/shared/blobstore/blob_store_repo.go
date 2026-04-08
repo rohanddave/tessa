@@ -33,6 +33,8 @@ type Repo struct {
 	useSSL   bool
 }
 
+const extensionMetadataKey = "extension"
+
 func LoadConfig() Config {
 	return Config{
 		Endpoint:        envOrDefault("S3_ENDPOINT", "localhost:9000"),
@@ -65,9 +67,13 @@ func NewRepo() (*Repo, error) {
 	}, nil
 }
 
-func (r *Repo) InsertFile(filePath string, content []byte) (string, error) {
+func (r *Repo) InsertFile(filePath string, content []byte, extension string) (string, error) {
 	objectKey := normalizeObjectKey(filePath)
-	contentType := detectContentType(objectKey)
+	normalizedExtension := normalizeExtension(extension)
+	if normalizedExtension == "" {
+		normalizedExtension = normalizeExtension(path.Ext(objectKey))
+	}
+	contentType := detectContentType(normalizedExtension, objectKey)
 
 	_, err := r.client.PutObject(
 		context.Background(),
@@ -77,6 +83,9 @@ func (r *Repo) InsertFile(filePath string, content []byte) (string, error) {
 		int64(len(content)),
 		miniosdk.PutObjectOptions{
 			ContentType: contentType,
+			UserMetadata: map[string]string{
+				extensionMetadataKey: normalizedExtension,
+			},
 		},
 	)
 	if err != nil {
@@ -86,10 +95,15 @@ func (r *Repo) InsertFile(filePath string, content []byte) (string, error) {
 	return r.objectURL(objectKey), nil
 }
 
-func (r *Repo) GetFile(fileURL string) ([]byte, error) {
+func (r *Repo) GetFile(fileURL string) (*shareddomain.FileJob, error) {
 	objectKey, err := r.resolveObjectKey(fileURL)
 	if err != nil {
 		return nil, err
+	}
+
+	objectInfo, err := r.client.StatObject(context.Background(), r.bucket, objectKey, miniosdk.StatObjectOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("stat object %q: %w", objectKey, err)
 	}
 
 	object, err := r.client.GetObject(context.Background(), r.bucket, objectKey, miniosdk.GetObjectOptions{})
@@ -103,10 +117,15 @@ func (r *Repo) GetFile(fileURL string) ([]byte, error) {
 		return nil, fmt.Errorf("read object %q: %w", objectKey, err)
 	}
 
-	return content, nil
+	return &shareddomain.FileJob{
+		Path:      objectKey,
+		Size:      objectInfo.Size,
+		Content:   content,
+		Extension: extractExtensionFromMetadata(objectInfo.UserMetadata, objectKey),
+	}, nil
 }
 
-func (r *Repo) GetFiles(fileURLs []string, jobs chan<- shareddomain.FileJob, workerCount int) error {
+func (r *Repo) GetFiles(fileURLs []string, jobs chan<- *shareddomain.FileJob, workerCount int) error {
 	if workerCount <= 0 {
 		workerCount = 1
 	}
@@ -131,23 +150,12 @@ func (r *Repo) GetFiles(fileURLs []string, jobs chan<- shareddomain.FileJob, wor
 			defer wg.Done()
 
 			for fileURL := range work {
-				content, err := r.GetFile(fileURL)
+				fileJob, err := r.GetFile(fileURL)
 				if err != nil {
 					errCh <- fmt.Errorf("get file for url %q: %w", fileURL, err)
 					return
 				}
-
-				objectKey, err := r.resolveObjectKey(fileURL)
-				if err != nil {
-					errCh <- fmt.Errorf("resolve object key for url %q: %w", fileURL, err)
-					return
-				}
-
-				jobs <- shareddomain.FileJob{
-					Path:    objectKey,
-					Size:    int64(len(content)),
-					Content: content,
-				}
+				jobs <- fileJob
 			}
 		}()
 	}
@@ -245,13 +253,30 @@ func normalizeObjectKey(objectKey string) string {
 	return strings.TrimPrefix(path.Clean("/"+objectKey), "/")
 }
 
-func detectContentType(objectKey string) string {
-	contentType := mime.TypeByExtension(path.Ext(objectKey))
+func detectContentType(extension string, objectKey string) string {
+	contentType := mime.TypeByExtension("." + normalizeExtension(extension))
+	if contentType == "" {
+		contentType = mime.TypeByExtension(path.Ext(objectKey))
+	}
 	if contentType == "" {
 		return "application/octet-stream"
 	}
 
 	return contentType
+}
+
+func normalizeExtension(extension string) string {
+	return strings.TrimPrefix(strings.TrimSpace(extension), ".")
+}
+
+func extractExtensionFromMetadata(metadata map[string]string, objectKey string) string {
+	for key, value := range metadata {
+		if strings.EqualFold(key, extensionMetadataKey) || strings.EqualFold(key, "X-Amz-Meta-"+extensionMetadataKey) {
+			return normalizeExtension(value)
+		}
+	}
+
+	return normalizeExtension(path.Ext(objectKey))
 }
 
 func envOrDefault(key, fallback string) string {

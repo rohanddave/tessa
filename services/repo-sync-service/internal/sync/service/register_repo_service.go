@@ -7,10 +7,10 @@ import (
 	"io"
 	"sync"
 
-	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/domain"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/util"
+	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
 )
 
 type RegisterRepoServiceInput struct {
@@ -130,11 +130,11 @@ func (s *RegisterRepoService) RegisterRepo() (snapshot *shareddomain.Snapshot, e
 	changeLogFileName := util.HashString(s.repoURL+s.branch+s.commitSHA) + "_change_log.json"
 
 	// create a manifest file and insert into blob store
-	manifestURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+manifestFileName, manifestBytes)
+	manifestURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+manifestFileName, manifestBytes, "json")
 	if err != nil {
 		return nil, err
 	}
-	changeLogURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+changeLogFileName, changeLogBytes)
+	changeLogURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+changeLogFileName, changeLogBytes, "json")
 	if err != nil {
 		return nil, err
 	}
@@ -191,9 +191,10 @@ func (s *RegisterRepoService) streamRepoFiles(jobs chan<- shareddomain.FileJob) 
 		}
 
 		jobs <- shareddomain.FileJob{
-			Path:    repoFile.Path,
-			Size:    repoFile.Size,
-			Content: content,
+			Path:      repoFile.Path,
+			Size:      repoFile.Size,
+			Content:   content,
+			Extension: repoFile.Extension,
 		}
 	}
 
@@ -204,15 +205,16 @@ func (s *RegisterRepoService) processFileJobsAndAttachToManifest(jobs <-chan sha
 	for job := range jobs {
 		// insert file content into blob store and get the url
 		contentHash := util.HashContent(job.Content)
-		_, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+contentHash, job.Content)
+		_, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+contentHash, job.Content, job.Extension)
 		if err != nil {
 			return err
 		}
 
 		s.manifestMu.Lock()
 		s.manifest.Files[job.Path] = domain.ManifestFile{
-			FileHash: contentHash,
-			FileSize: job.Size,
+			FileHash:      contentHash,
+			FileSize:      job.Size,
+			FileExtension: job.Extension,
 		}
 		s.manifestMu.Unlock()
 	}
@@ -226,9 +228,10 @@ func (s *RegisterRepoService) buildInitialChangeLog() shareddomain.ChangeLog {
 	created := make([]shareddomain.ChangeLogFile, 0, len(s.manifest.Files))
 	for path, file := range s.manifest.Files {
 		created = append(created, shareddomain.ChangeLogFile{
-			Path:     path,
-			FileHash: file.FileHash,
-			FileSize: file.FileSize,
+			Path:          path,
+			FileHash:      file.FileHash,
+			FileSize:      file.FileSize,
+			FileExtension: file.FileExtension,
 		})
 	}
 

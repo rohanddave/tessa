@@ -7,10 +7,10 @@ import (
 	"io"
 	"sync"
 
-	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/domain"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/util"
+	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
 )
 
 type RepoUpdateServiceInput struct {
@@ -102,13 +102,13 @@ func (s *RepoUpdateService) UpdateRepo() (snapshot *shareddomain.Snapshot, err e
 		return nil, nil
 	}
 
-	prevManifestBytes, err := s.blobStoreRepo.GetFile(prevSnapshot.ManifestURL)
+	prevManifestFile, err := s.blobStoreRepo.GetFile(prevSnapshot.ManifestURL)
 	if err != nil {
 		return nil, fmt.Errorf("get manifest from blob store for %q: %w", s.repoURL, err)
 	}
 
 	var prevManifest domain.Manifest
-	if err := json.Unmarshal(prevManifestBytes, &prevManifest); err != nil {
+	if err := json.Unmarshal(prevManifestFile.Content, &prevManifest); err != nil {
 		return nil, fmt.Errorf("unmarshal previous manifest for %q: %w", s.repoURL, err)
 	}
 
@@ -170,9 +170,10 @@ func (s *RepoUpdateService) UpdateRepo() (snapshot *shareddomain.Snapshot, err e
 	for path, file := range s.manifest.Files {
 		if _, seen := s.seenPaths[path]; !seen {
 			s.changeLog.Deleted = append(s.changeLog.Deleted, shareddomain.ChangeLogFile{
-				Path:     path,
-				FileHash: file.FileHash,
-				FileSize: file.FileSize,
+				Path:          path,
+				FileHash:      file.FileHash,
+				FileSize:      file.FileSize,
+				FileExtension: file.FileExtension,
 			})
 			delete(s.manifest.Files, path)
 		}
@@ -191,11 +192,11 @@ func (s *RepoUpdateService) UpdateRepo() (snapshot *shareddomain.Snapshot, err e
 	changeLogFileName := util.HashString(s.repoURL+s.branch+s.commitSHA) + "_change_log.json"
 
 	// create a manifest file and insert into blob store
-	manifestURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+manifestFileName, manifestBytes)
+	manifestURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+manifestFileName, manifestBytes, "json")
 	if err != nil {
 		return nil, err
 	}
-	changeLogURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+changeLogFileName, changeLogBytes)
+	changeLogURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+changeLogFileName, changeLogBytes, "json")
 	if err != nil {
 		return nil, err
 	}
@@ -252,9 +253,10 @@ func (s *RepoUpdateService) streamRepoFiles(jobs chan<- shareddomain.FileJob) er
 		}
 
 		jobs <- shareddomain.FileJob{
-			Path:    repoFile.Path,
-			Size:    repoFile.Size,
-			Content: content,
+			Path:      repoFile.Path,
+			Size:      repoFile.Size,
+			Content:   content,
+			Extension: repoFile.Extension,
 		}
 	}
 
@@ -270,8 +272,9 @@ func (s *RepoUpdateService) processFileJobsAndAttachToManifest(jobs <-chan share
 		s.seenPaths[job.Path] = struct{}{}
 		prevFile, exists := s.manifest.Files[job.Path]
 		newFile := domain.ManifestFile{
-			FileHash: contentHash,
-			FileSize: job.Size,
+			FileHash:      contentHash,
+			FileSize:      job.Size,
+			FileExtension: job.Extension,
 		}
 
 		if exists && prevFile.FileHash == contentHash {
@@ -283,17 +286,19 @@ func (s *RepoUpdateService) processFileJobsAndAttachToManifest(jobs <-chan share
 
 		if exists {
 			s.changeLog.Updated = append(s.changeLog.Updated, shareddomain.UpdatedChangeLogFile{
-				Path:        job.Path,
-				OldFileHash: prevFile.FileHash,
-				OldFileSize: prevFile.FileSize,
-				NewFileHash: newFile.FileHash,
-				NewFileSize: newFile.FileSize,
+				Path:          job.Path,
+				OldFileHash:   prevFile.FileHash,
+				OldFileSize:   prevFile.FileSize,
+				NewFileHash:   newFile.FileHash,
+				NewFileSize:   newFile.FileSize,
+				FileExtension: newFile.FileExtension,
 			})
 		} else {
 			s.changeLog.Created = append(s.changeLog.Created, shareddomain.ChangeLogFile{
-				Path:     job.Path,
-				FileHash: newFile.FileHash,
-				FileSize: newFile.FileSize,
+				Path:          job.Path,
+				FileHash:      newFile.FileHash,
+				FileSize:      newFile.FileSize,
+				FileExtension: newFile.FileExtension,
 			})
 		}
 
@@ -301,7 +306,7 @@ func (s *RepoUpdateService) processFileJobsAndAttachToManifest(jobs <-chan share
 		s.manifest.Files[job.Path] = newFile
 		s.manifestMu.Unlock()
 
-		_, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+contentHash, job.Content)
+		_, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+contentHash, job.Content, job.Extension)
 		if err != nil {
 			return err
 		}

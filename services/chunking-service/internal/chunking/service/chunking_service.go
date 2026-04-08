@@ -1,13 +1,19 @@
 package service
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
 	"path"
+	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
+	"github.com/rohandave/tessa-rag/services/chunking-service/internal/chunking/ports"
 	sharedblobstore "github.com/rohandave/tessa-rag/services/shared/blobstore"
 	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
 )
@@ -38,15 +44,15 @@ func NewChunkingService(input *ChunkingServiceInput) *ChunkingService {
 func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) (map[string]string, error) {
 	s.logf("starting chunking pipeline for snapshot=%s repo=%s changelog=%s", snapshot.Id, snapshot.RepoURL, snapshot.ChangeLogURL)
 
-	changeLogFileContentRaw, err := s.blobStoreRepo.GetFile(snapshot.ChangeLogURL)
+	changeLogFile, err := s.blobStoreRepo.GetFile(snapshot.ChangeLogURL)
 	if err != nil {
 		s.logf("failed to fetch change log for snapshot=%s: %v", snapshot.Id, err)
 		return nil, err
 	}
-	s.logf("loaded change log for snapshot=%s bytes=%d", snapshot.Id, len(changeLogFileContentRaw))
+	s.logf("loaded change log for snapshot=%s bytes=%d extension=%s", snapshot.Id, len(changeLogFile.Content), changeLogFile.Extension)
 
 	var changeLogFileContent shareddomain.ChangeLog
-	err = json.Unmarshal(changeLogFileContentRaw, &changeLogFileContent)
+	err = json.Unmarshal(changeLogFile.Content, &changeLogFileContent)
 	if err != nil {
 		s.logf("failed to decode change log for snapshot=%s: %v", snapshot.Id, err)
 		return nil, err
@@ -59,9 +65,16 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) (map[string]stri
 		len(changeLogFileContent.Deleted),
 	)
 
-	fetchedFilesChannel := make(chan shareddomain.FileJob)
-	normalizedFilesChannel := make(chan string)
+	fetchedFilesChannel := make(chan *shareddomain.FileJob)
+	normalizedFilesChannel := make(chan *shareddomain.FileJob)
 	errCh := make(chan error, 1)
+	chunkLocations := make(map[string]string)
+
+	blobDirectoryURL, err := deriveDirectoryURL(snapshot.ChangeLogURL)
+	if err != nil {
+		s.logf("failed to derive blob directory from change log url for snapshot=%s: %v", snapshot.Id, err)
+		return nil, err
+	}
 
 	normalizationWorkerCount := 5
 	extractionWorkerCount := 5
@@ -69,6 +82,8 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) (map[string]stri
 
 	var normalizationWG sync.WaitGroup
 	var extractionWG sync.WaitGroup
+	var chunkLocationsMu sync.Mutex
+	var chunkCounter atomic.Uint64
 
 	for range normalizationWorkerCount {
 		normalizationWG.Add(1)
@@ -77,16 +92,20 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) (map[string]stri
 
 	for range extractionWorkerCount {
 		extractionWG.Add(1)
-		go s.extractionWorker(normalizedFilesChannel, &extractionWG, errCh)
+		go s.extractionWorker(
+			normalizedFilesChannel,
+			snapshot,
+			blobDirectoryURL,
+			&chunkCounter,
+			chunkLocations,
+			&chunkLocationsMu,
+			&extractionWG,
+			errCh,
+		)
 	}
 
 	// TODO: handle updated and deleted files as well
 	fileURLs := make([]string, 0, len(changeLogFileContent.Created))
-	blobDirectoryURL, err := deriveDirectoryURL(snapshot.ChangeLogURL)
-	if err != nil {
-		s.logf("failed to derive blob directory from change log url for snapshot=%s: %v", snapshot.Id, err)
-		return nil, err
-	}
 
 	for _, file := range changeLogFileContent.Created {
 		fileURL := blobDirectoryURL + "/" + file.FileHash
@@ -120,15 +139,20 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) (map[string]stri
 	}
 
 	s.logf("finished chunking pipeline for snapshot=%s", snapshot.Id)
-	return map[string]string{}, nil
+	return chunkLocations, nil
 }
 
-func (s *ChunkingService) normalizationWorker(fetchedFilesChannel <-chan shareddomain.FileJob, normalizedFilesChannel chan<- string, wg *sync.WaitGroup, errCh chan<- error) {
+func (s *ChunkingService) normalizationWorker(fetchedFilesChannel <-chan *shareddomain.FileJob, normalizedFilesChannel chan<- *shareddomain.FileJob, wg *sync.WaitGroup, errCh chan<- error) {
 	defer wg.Done()
 
 	for fileJob := range fetchedFilesChannel {
+		if fileJob == nil {
+			s.logf("skipping nil file job in normalization worker")
+			continue
+		}
+
 		s.logf("normalizing file path=%s size=%d", fileJob.Path, fileJob.Size)
-		normalizedContent, err := s.normalizationService.NormalizeFileContent(string(fileJob.Content))
+		normalizedFileJob, err := s.normalizationService.NormalizeFileContent(fileJob)
 		if err != nil {
 			s.logf("normalization failed for file path=%s: %v", fileJob.Path, err)
 			select {
@@ -138,27 +162,134 @@ func (s *ChunkingService) normalizationWorker(fetchedFilesChannel <-chan sharedd
 			continue
 		}
 
-		s.logf("normalized file path=%s output_bytes=%d", fileJob.Path, len(normalizedContent))
-		normalizedFilesChannel <- normalizedContent
+		s.logf("normalized file path=%s output_bytes=%d", normalizedFileJob.Path, len(normalizedFileJob.Content))
+		normalizedFilesChannel <- normalizedFileJob
 	}
 }
 
-func (s *ChunkingService) extractionWorker(normalizedFilesChannel <-chan string, wg *sync.WaitGroup, errCh chan<- error) {
+func (s *ChunkingService) extractionWorker(normalizedFilesChannel <-chan *shareddomain.FileJob, snapshot shareddomain.Snapshot, blobDirectoryURL string, chunkCounter *atomic.Uint64, chunkLocations map[string]string, chunkLocationsMu *sync.Mutex, wg *sync.WaitGroup, errCh chan<- error) {
 	defer wg.Done()
 
-	for normalizedContent := range normalizedFilesChannel {
-		s.logf("extracting normalized content bytes=%d", len(normalizedContent))
-		extractedData, err := s.extractionService.ExtractFileContent(normalizedContent)
+	for fileJob := range normalizedFilesChannel {
+		if fileJob == nil {
+			s.logf("skipping nil file job in extraction worker")
+			continue
+		}
+
+		s.logf("extracting normalized content path=%s bytes=%d extension=%s", fileJob.Path, len(fileJob.Content), fileJob.Extension)
+		extractedData, err := s.extractionService.ExtractFileContent(fileJob)
 		if err != nil {
-			s.logf("extraction failed: %v", err)
+			s.logf("extraction failed path=%s: %v", fileJob.Path, err)
 			select {
-			case errCh <- fmt.Errorf("extract content: %w", err):
+			case errCh <- fmt.Errorf("extract content for %s: %w", fileJob.Path, err):
 			default:
 			}
 			continue
 		}
 
-		s.logf("extracted data keys=%d", len(extractedData))
+		s.logf("extraced data symbols=%d containers=%d imports=%d doc comments=%d classes=%d functions=%d methods=%d module level declarations=%d", len(extractedData.Symbols), len(extractedData.Containers), len(extractedData.Imports), len(extractedData.DocComments), len(extractedData.Classes), len(extractedData.Functions), len(extractedData.Methods), len(extractedData.ModuleLevelDeclarations))
+
+		chunkID := strconv.FormatUint(chunkCounter.Add(1), 10)
+		chunk := buildChunk(snapshot, fileJob, chunkID, extractedData)
+
+		chunkJSON, err := json.Marshal(chunk)
+		if err != nil {
+			s.logf("failed to marshal chunk payload: %v", err)
+			select {
+			case errCh <- fmt.Errorf("marshal chunk payload: %w", err):
+			default:
+			}
+			continue
+		}
+
+		contentHash := hashContent(chunkJSON)
+		fileName := fmt.Sprintf("%s_chunk_%s.json", contentHash, chunkID)
+		filePath := blobDirectoryURL + "/" + fileName
+
+		insertedURL, err := s.blobStoreRepo.InsertFile(filePath, chunkJSON, "json")
+		if err != nil {
+			s.logf("failed to write chunk chunk_id=%s path=%s: %v", chunkID, filePath, err)
+			select {
+			case errCh <- fmt.Errorf("insert chunk %s: %w", chunkID, err):
+			default:
+			}
+			continue
+		}
+
+		chunkLocationsMu.Lock()
+		chunkLocations[chunkID] = insertedURL
+		chunkLocationsMu.Unlock()
+		s.logf("stored extracted chunk chunk_id=%s url=%s", chunkID, insertedURL)
+	}
+}
+
+func buildChunk(snapshot shareddomain.Snapshot, fileJob *shareddomain.FileJob, chunkID string, extractedData *ports.CodeParseResult) shareddomain.Chunk {
+	filePath := ""
+	fileName := ""
+	language := "unknown"
+	text := ""
+
+	if fileJob != nil {
+		filePath = fileJob.Path
+		fileName = path.Base(fileJob.Path)
+		language = normalizeLanguage(fileJob.Extension)
+		text = string(fileJob.Content)
+	}
+
+	chunk := shareddomain.Chunk{
+		ChunkID:      chunkID,
+		RepoURL:      snapshot.RepoURL,
+		FileHash:     hashContent([]byte(text)),
+		FileName:     fileName,
+		Branch:       snapshot.Branch,
+		CommitSHA:    snapshot.CommitSHA,
+		SnapshotID:   snapshot.Id,
+		FilePath:     filePath,
+		DocumentType: "code",
+		Language:     language,
+		Text:         text,
+		SymbolName:   "",
+		SymbolType:   "",
+		StartLine:    0,
+		EndLine:      0,
+		StartChar:    0,
+		EndChar:      0,
+		PrevChunkID:  "",
+		NextChunkID:  "",
+		CreatedAt:    time.Now().UTC().Unix(),
+	}
+
+	if extractedData == nil || len(extractedData.Symbols) == 0 {
+		return chunk
+	}
+
+	primarySymbol := extractedData.Symbols[0]
+	chunk.SymbolName = primarySymbol.Name
+	chunk.SymbolType = primarySymbol.Kind
+	chunk.StartChar = int(primarySymbol.StartByte)
+	chunk.EndChar = int(primarySymbol.EndByte)
+
+	return chunk
+}
+
+func normalizeLanguage(extension string) string {
+	switch strings.ToLower(strings.TrimPrefix(extension, ".")) {
+	case "go":
+		return "go"
+	case "js":
+		return "javascript"
+	case "jsx":
+		return "javascript"
+	case "ts":
+		return "typescript"
+	case "tsx":
+		return "typescript"
+	case "py":
+		return "python"
+	case "java":
+		return "java"
+	default:
+		return "unknown"
 	}
 }
 
@@ -181,6 +312,11 @@ func deriveDirectoryURL(fileURL string) (string, error) {
 
 	parsedURL.Path = dirPath
 	return parsedURL.String(), nil
+}
+
+func hashContent(content []byte) string {
+	sum := sha256.Sum256(content)
+	return fmt.Sprintf("%x", sum)
 }
 
 // func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) (map[string]string, error) {

@@ -11,15 +11,17 @@ type ChangeLog struct {
 }
 
 type ChangeLogFile struct {
-	Path     string `json:"path"`
-	FileHash string `json:"file_hash"`
-	FileSize int64  `json:"file_size"`
+	Path          string `json:"path"`
+	FileHash      string `json:"file_hash"`
+	FileSize      int64  `json:"file_size"`
+	FileExtension string `json:"file_extension"`
 }
 
 type UpdatedChangeLogFile struct {
-	Path        string `json:"path"`
-	OldFileHash string `json:"old_file_hash"`
-	OldFileSize int64  `json:"old_file_size"`
-	NewFileHash string `json:"new_file_hash"`
-	NewFileSize int64  `json:"new_file_size"`
+	Path          string `json:"path"`
+	OldFileHash   string `json:"old_file_hash"`
+	OldFileSize   int64  `json:"old_file_size"`
+	NewFileHash   string `json:"new_file_hash"`
+	NewFileSize   int64  `json:"new_file_size"`
+	FileExtension string `json:"file_extension"`
 }

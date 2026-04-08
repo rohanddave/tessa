@@ -1,7 +1,10 @@
 package service
 
 import (
+	"fmt"
 	"strings"
+
+	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
 )
 
 type NormalizationServiceInput struct {
@@ -14,16 +17,15 @@ func NewNormalizationService(input *NormalizationServiceInput) *NormalizationSer
 	return &NormalizationService{}
 }
 
-func (s *NormalizationService) NormalizeFileContent(content string) (string, error) {
-	// Implement your normalization logic here
-	// Perform normalization on fileContent as needed
-	// This is a placeholder for your actual normalization logic
-	normalizedContent := strings.TrimSpace(content)
+func (s *NormalizationService) NormalizeFileContent(fileJob *shareddomain.FileJob) (*shareddomain.FileJob, error) {
+	if fileJob == nil {
+		return nil, fmt.Errorf("file job cannot be nil")
+	}
 
-	// Optionally, you can store the normalized content back to the blob store or return it directly
-	// For example, you can write the normalized content back to the blob store and return the new path
-	// normalizedFilePath := filePath + ".normalized" // Example of a new path for the normalized file
+	normalizedContent := strings.TrimSpace(string(fileJob.Content))
+	fileJob.Content = []byte(normalizedContent)
+	fileJob.Size = int64(len(fileJob.Content))
+	strings.TrimSpace(string(fileJob.Extension))
 
-	// For example, you can read the file, perform normalization, and return the normalized content or path
-	return normalizedContent, nil
+	return fileJob, nil
 }
