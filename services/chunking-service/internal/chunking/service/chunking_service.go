@@ -190,51 +190,120 @@ func (s *ChunkingService) extractionWorker(normalizedFilesChannel <-chan *shared
 
 		s.logf("extraced data symbols=%d containers=%d imports=%d doc comments=%d classes=%d functions=%d methods=%d module level declarations=%d", len(extractedData.Symbols), len(extractedData.Containers), len(extractedData.Imports), len(extractedData.DocComments), len(extractedData.Classes), len(extractedData.Functions), len(extractedData.Methods), len(extractedData.ModuleLevelDeclarations))
 
-		chunkID := strconv.FormatUint(chunkCounter.Add(1), 10)
-		chunk := buildChunk(snapshot, fileJob, chunkID, extractedData)
+		chunks := buildChunks(snapshot, fileJob, extractedData, chunkCounter)
+		s.logf("built %d chunks for path=%s", len(chunks), fileJob.Path)
 
-		chunkJSON, err := json.Marshal(chunk)
-		if err != nil {
-			s.logf("failed to marshal chunk payload: %v", err)
-			select {
-			case errCh <- fmt.Errorf("marshal chunk payload: %w", err):
-			default:
+		for _, chunk := range chunks {
+			chunkJSON, err := json.Marshal(chunk)
+			if err != nil {
+				s.logf("failed to marshal chunk payload chunk_id=%s path=%s: %v", chunk.ChunkID, fileJob.Path, err)
+				select {
+				case errCh <- fmt.Errorf("marshal chunk payload %s: %w", chunk.ChunkID, err):
+				default:
+				}
+				continue
 			}
-			continue
-		}
 
-		contentHash := hashContent(chunkJSON)
-		fileName := fmt.Sprintf("%s_chunk_%s.json", contentHash, chunkID)
-		filePath := sharedutil.HashString(snapshot.RepoURL) + "/" + fileName
+			contentHash := hashContent(chunkJSON)
+			fileName := fmt.Sprintf("%s_chunk_%s.json", contentHash, chunk.ChunkID)
+			filePath := sharedutil.HashString(snapshot.RepoURL) + "/" + fileName
 
-		insertedURL, err := s.blobStoreRepo.InsertFile(filePath, chunkJSON, "json")
-		if err != nil {
-			s.logf("failed to write chunk chunk_id=%s path=%s: %v", chunkID, filePath, err)
-			select {
-			case errCh <- fmt.Errorf("insert chunk %s: %w", chunkID, err):
-			default:
+			insertedURL, err := s.blobStoreRepo.InsertFile(filePath, chunkJSON, "json")
+			if err != nil {
+				s.logf("failed to write chunk chunk_id=%s path=%s: %v", chunk.ChunkID, filePath, err)
+				select {
+				case errCh <- fmt.Errorf("insert chunk %s: %w", chunk.ChunkID, err):
+				default:
+				}
+				continue
 			}
-			continue
-		}
 
-		chunkLocationsMu.Lock()
-		chunkLocations[chunkID] = insertedURL
-		chunkLocationsMu.Unlock()
-		s.logf("stored extracted chunk chunk_id=%s url=%s", chunkID, insertedURL)
+			chunkLocationsMu.Lock()
+			chunkLocations[chunk.ChunkID] = insertedURL
+			chunkLocationsMu.Unlock()
+			s.logf("stored extracted chunk chunk_id=%s symbol=%s type=%s url=%s", chunk.ChunkID, chunk.SymbolName, chunk.SymbolType, insertedURL)
+		}
 	}
 }
 
-func buildChunk(snapshot shareddomain.Snapshot, fileJob *shareddomain.FileJob, chunkID string, extractedData *ports.CodeParseResult) shareddomain.Chunk {
+func buildChunks(snapshot shareddomain.Snapshot, fileJob *shareddomain.FileJob, extractedData *ports.CodeParseResult, chunkCounter *atomic.Uint64) []shareddomain.Chunk {
+	declarations := collectChunkDeclarations(extractedData)
+	if len(declarations) == 0 {
+		chunkID := strconv.FormatUint(chunkCounter.Add(1), 10)
+		return []shareddomain.Chunk{buildChunk(snapshot, fileJob, chunkID, ports.CodeDeclaration{
+			Name:      "",
+			Kind:      "",
+			Text:      "",
+			StartByte: 0,
+			EndByte:   uint32(len(fileJob.Content)),
+		})}
+	}
+
+	chunks := make([]shareddomain.Chunk, 0, len(declarations))
+	for _, declaration := range declarations {
+		chunkID := strconv.FormatUint(chunkCounter.Add(1), 10)
+		chunks = append(chunks, buildChunk(snapshot, fileJob, chunkID, declaration))
+	}
+
+	for i := range chunks {
+		if i > 0 {
+			chunks[i].PrevChunkID = chunks[i-1].ChunkID
+		}
+		if i < len(chunks)-1 {
+			chunks[i].NextChunkID = chunks[i+1].ChunkID
+		}
+	}
+
+	return chunks
+}
+
+func collectChunkDeclarations(extractedData *ports.CodeParseResult) []ports.CodeDeclaration {
+	if extractedData == nil {
+		return nil
+	}
+
+	declarations := make([]ports.CodeDeclaration, 0, len(extractedData.Classes)+len(extractedData.Functions)+len(extractedData.Methods)+len(extractedData.ModuleLevelDeclarations))
+	seen := make(map[string]struct{})
+
+	appendDeclarations := func(items []ports.CodeDeclaration) {
+		for _, declaration := range items {
+			if declaration.StartByte >= declaration.EndByte {
+				continue
+			}
+
+			key := fmt.Sprintf("%s:%s:%d:%d", declaration.Kind, declaration.Name, declaration.StartByte, declaration.EndByte)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			declarations = append(declarations, declaration)
+		}
+	}
+
+	appendDeclarations(extractedData.Classes)
+	appendDeclarations(extractedData.Functions)
+	appendDeclarations(extractedData.Methods)
+	appendDeclarations(extractedData.ModuleLevelDeclarations)
+
+	return declarations
+}
+
+func buildChunk(snapshot shareddomain.Snapshot, fileJob *shareddomain.FileJob, chunkID string, declaration ports.CodeDeclaration) shareddomain.Chunk {
 	filePath := ""
 	fileName := ""
 	language := "unknown"
 	text := ""
+	startByte := declaration.StartByte
+	endByte := declaration.EndByte
+	startLine := 0
+	endLine := 0
 
 	if fileJob != nil {
 		filePath = fileJob.Path
 		fileName = path.Base(fileJob.Path)
 		language = normalizeLanguage(fileJob.Extension)
-		text = string(fileJob.Content)
+		text = extractChunkText(fileJob.Content, startByte, endByte)
+		startLine, endLine = byteRangeToLineRange(fileJob.Content, startByte, endByte)
 	}
 
 	chunk := shareddomain.Chunk{
@@ -249,28 +318,56 @@ func buildChunk(snapshot shareddomain.Snapshot, fileJob *shareddomain.FileJob, c
 		DocumentType: "code",
 		Language:     language,
 		Text:         text,
-		SymbolName:   "",
-		SymbolType:   "",
-		StartLine:    0,
-		EndLine:      0,
-		StartChar:    0,
-		EndChar:      0,
+		SymbolName:   declaration.Name,
+		SymbolType:   declaration.Kind,
+		StartLine:    startLine,
+		EndLine:      endLine,
+		StartChar:    int(startByte),
+		EndChar:      int(endByte),
 		PrevChunkID:  "",
 		NextChunkID:  "",
 		CreatedAt:    time.Now().UTC().Unix(),
 	}
 
-	if extractedData == nil || len(extractedData.Symbols) == 0 {
-		return chunk
+	return chunk
+}
+
+func extractChunkText(content []byte, startByte uint32, endByte uint32) string {
+	if len(content) == 0 {
+		return ""
 	}
 
-	primarySymbol := extractedData.Symbols[0]
-	chunk.SymbolName = primarySymbol.Name
-	chunk.SymbolType = primarySymbol.Kind
-	chunk.StartChar = int(primarySymbol.StartByte)
-	chunk.EndChar = int(primarySymbol.EndByte)
+	if startByte >= uint32(len(content)) || endByte > uint32(len(content)) || startByte >= endByte {
+		return string(content)
+	}
 
-	return chunk
+	return string(content[startByte:endByte])
+}
+
+func byteRangeToLineRange(content []byte, startByte uint32, endByte uint32) (int, int) {
+	if len(content) == 0 {
+		return 0, 0
+	}
+
+	if startByte >= uint32(len(content)) || endByte > uint32(len(content)) || startByte >= endByte {
+		return 1, strings.Count(string(content), "\n") + 1
+	}
+
+	startLine := 1
+	for _, b := range content[:startByte] {
+		if b == '\n' {
+			startLine++
+		}
+	}
+
+	endLine := startLine
+	for _, b := range content[startByte:endByte] {
+		if b == '\n' {
+			endLine++
+		}
+	}
+
+	return startLine, endLine
 }
 
 func normalizeLanguage(extension string) string {

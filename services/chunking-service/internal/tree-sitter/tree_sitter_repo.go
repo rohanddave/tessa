@@ -2,8 +2,10 @@ package treesitter
 
 import (
 	"context"
+	"embed"
 	"fmt"
 	"log"
+	"path"
 	"strings"
 
 	"github.com/rohandave/tessa-rag/services/chunking-service/internal/chunking/ports"
@@ -15,7 +17,20 @@ import (
 	tstypescript "github.com/smacker/go-tree-sitter/typescript/typescript"
 )
 
+//go:embed queries/*.scm
+var queryFiles embed.FS
+
 type TreeSitterRepo struct{}
+
+type resolvedLanguage struct {
+	name     string
+	language *sitter.Language
+}
+
+type queryMatch struct {
+	patternIndex uint16
+	captures     map[string][]*sitter.Node
+}
 
 func NewTreeSitterRepo() ports.CodeParser {
 	return &TreeSitterRepo{}
@@ -26,47 +41,39 @@ func (r *TreeSitterRepo) DescribeParser() string {
 }
 
 func (r *TreeSitterRepo) ExtractFileMetadata(fileContent string, language string) (*ports.CodeParseResult, error) {
-	trimmedLanguage := strings.ToLower(strings.TrimSpace(language))
-	if trimmedLanguage == "" {
-		err := fmt.Errorf("language cannot be empty")
-		log.Printf("tree-sitter extraction failed: %v", err)
+	resolved, err := r.resolveLanguage(language)
+	if err != nil {
+		log.Printf("tree-sitter extraction failed language=%s: %v", strings.TrimSpace(language), err)
 		return nil, err
 	}
 
 	if strings.TrimSpace(fileContent) == "" {
 		err := fmt.Errorf("file content cannot be empty")
-		log.Printf("tree-sitter extraction failed language=%s: %v", trimmedLanguage, err)
+		log.Printf("tree-sitter extraction failed language=%s: %v", resolved.name, err)
 		return nil, err
 	}
 
-	log.Printf("tree-sitter extraction started language=%s content_bytes=%d", trimmedLanguage, len(fileContent))
-
-	lang, err := r.resolveLanguage(language)
-	if err != nil {
-		log.Printf("tree-sitter extraction failed language=%s: %v", trimmedLanguage, err)
-		return nil, err
-	}
+	log.Printf("tree-sitter extraction started language=%s content_bytes=%d", resolved.name, len(fileContent))
 
 	source := []byte(fileContent)
 	parser := sitter.NewParser()
 	defer parser.Close()
 
-	if lang == nil {
-		err := fmt.Errorf("tree-sitter language is nil for %q", trimmedLanguage)
-		log.Printf("tree-sitter extraction failed language=%s: %v", trimmedLanguage, err)
+	if resolved.language == nil {
+		err := fmt.Errorf("tree-sitter language is nil for %q", resolved.name)
+		log.Printf("tree-sitter extraction failed language=%s: %v", resolved.name, err)
 		return nil, err
 	}
 
-	log.Printf("tree-sitter setting language=%s", trimmedLanguage)
-	parser.SetLanguage(lang)
+	parser.SetLanguage(resolved.language)
 	tree, err := parser.ParseCtx(context.Background(), nil, source)
 	if err != nil {
-		log.Printf("tree-sitter parse failed language=%s: %v", trimmedLanguage, err)
+		log.Printf("tree-sitter parse failed language=%s: %v", resolved.name, err)
 		return nil, fmt.Errorf("parse file content: %w", err)
 	}
 	if tree == nil {
 		err := fmt.Errorf("tree-sitter returned nil parse tree")
-		log.Printf("tree-sitter extraction failed language=%s: %v", trimmedLanguage, err)
+		log.Printf("tree-sitter extraction failed language=%s: %v", resolved.name, err)
 		return nil, err
 	}
 	defer tree.Close()
@@ -74,23 +81,36 @@ func (r *TreeSitterRepo) ExtractFileMetadata(fileContent string, language string
 	root := tree.RootNode()
 	if root == nil {
 		err := fmt.Errorf("tree-sitter returned nil root node")
-		log.Printf("tree-sitter extraction failed language=%s: %v", trimmedLanguage, err)
+		log.Printf("tree-sitter extraction failed language=%s: %v", resolved.name, err)
+		return nil, err
+	}
+
+	querySource, err := r.loadQuerySource(resolved.name)
+	if err != nil {
+		log.Printf("tree-sitter query load failed language=%s: %v", resolved.name, err)
+		return nil, err
+	}
+
+	matches, err := r.runQuery(resolved, root, querySource)
+	if err != nil {
+		log.Printf("tree-sitter query execution failed language=%s: %v", resolved.name, err)
 		return nil, err
 	}
 
 	result := &ports.CodeParseResult{}
-	result.Classes = r.extractClasses(root, source)
-	result.Functions = r.extractFunctions(root, source)
-	result.Methods = r.extractMethods(root, source)
-	result.ModuleLevelDeclarations = r.extractModuleLevelDeclarations(root, source)
+	result.Classes = r.extractClasses(matches, source)
+	result.Functions = r.extractFunctions(matches, source)
+	result.Methods = r.extractMethods(matches, source)
+	result.ModuleLevelDeclarations = r.extractModuleLevelDeclarations(matches, source)
 	result.Symbols = r.extractSymbols(result)
-	result.Containers = r.extractContainers(root, source)
-	result.Imports = r.extractImports(root, source)
-	result.DocComments = r.extractDocComments(root, source)
+	result.Containers = r.extractContainers(result, source)
+	result.Imports = r.extractImports(matches, source)
+	result.DocComments = r.extractDocComments(matches, source)
 
 	log.Printf(
-		"tree-sitter extraction completed language=%s symbols=%d containers=%d imports=%d doc_comments=%d classes=%d functions=%d methods=%d module_level_declarations=%d",
-		trimmedLanguage,
+		"tree-sitter extraction completed language=%s query_matches=%d symbols=%d containers=%d imports=%d doc_comments=%d classes=%d functions=%d methods=%d module_level_declarations=%d",
+		resolved.name,
+		len(matches),
 		len(result.Symbols),
 		len(result.Containers),
 		len(result.Imports),
@@ -102,6 +122,98 @@ func (r *TreeSitterRepo) ExtractFileMetadata(fileContent string, language string
 	)
 
 	return result, nil
+}
+
+func (r *TreeSitterRepo) runQuery(resolved resolvedLanguage, root *sitter.Node, querySource []byte) ([]queryMatch, error) {
+	query, err := sitter.NewQuery(querySource, resolved.language)
+	if err != nil {
+		return nil, fmt.Errorf("compile %s query: %w", resolved.name, err)
+	}
+	defer query.Close()
+
+	cursor := sitter.NewQueryCursor()
+	defer cursor.Close()
+
+	cursor.Exec(query, root)
+
+	matches := make([]queryMatch, 0)
+	for {
+		match, ok := cursor.NextMatch()
+		if !ok {
+			break
+		}
+
+		filteredMatch := cursor.FilterPredicates(match, nil)
+		if filteredMatch == nil {
+			continue
+		}
+
+		captures := make(map[string][]*sitter.Node)
+		for _, capture := range filteredMatch.Captures {
+			name := query.CaptureNameForId(capture.Index)
+			captures[name] = append(captures[name], capture.Node)
+		}
+
+		matches = append(matches, queryMatch{
+			patternIndex: filteredMatch.PatternIndex,
+			captures:     captures,
+		})
+	}
+
+	return matches, nil
+}
+
+func (r *TreeSitterRepo) extractClasses(matches []queryMatch, source []byte) []ports.CodeDeclaration {
+	return r.extractDeclarations(matches, source, "class.definition", "class.name", "class")
+}
+
+func (r *TreeSitterRepo) extractFunctions(matches []queryMatch, source []byte) []ports.CodeDeclaration {
+	return r.extractDeclarations(matches, source, "function.definition", "function.name", "function")
+}
+
+func (r *TreeSitterRepo) extractMethods(matches []queryMatch, source []byte) []ports.CodeDeclaration {
+	return r.extractDeclarations(matches, source, "method.definition", "method.name", "method")
+}
+
+func (r *TreeSitterRepo) extractModuleLevelDeclarations(matches []queryMatch, source []byte) []ports.CodeDeclaration {
+	return r.extractDeclarations(matches, source, "module.declaration", "module.name", "module")
+}
+
+func (r *TreeSitterRepo) extractDeclarations(matches []queryMatch, source []byte, declarationCapture string, nameCapture string, kind string) []ports.CodeDeclaration {
+	declarations := make([]ports.CodeDeclaration, 0)
+	seen := make(map[string]struct{})
+
+	for _, match := range matches {
+		declarationNode := firstCapture(match, declarationCapture)
+		nameNode := firstCapture(match, nameCapture)
+		if declarationNode == nil {
+			continue
+		}
+
+		name := strings.TrimSpace(r.nodeText(nameNode, source))
+		if name == "" {
+			name = r.extractIdentifier(declarationNode, source)
+		}
+		if name == "" {
+			continue
+		}
+
+		key := fmt.Sprintf("%s:%s:%d:%d", kind, name, declarationNode.StartByte(), declarationNode.EndByte())
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		declarations = append(declarations, ports.CodeDeclaration{
+			Name:      name,
+			Kind:      kind,
+			Text:      strings.TrimSpace(r.nodeText(declarationNode, source)),
+			StartByte: declarationNode.StartByte(),
+			EndByte:   declarationNode.EndByte(),
+		})
+	}
+
+	return declarations
 }
 
 func (r *TreeSitterRepo) extractSymbols(result *ports.CodeParseResult) []ports.CodeSymbol {
@@ -132,162 +244,124 @@ func (r *TreeSitterRepo) extractSymbols(result *ports.CodeParseResult) []ports.C
 	return symbols
 }
 
-func (r *TreeSitterRepo) extractContainers(root *sitter.Node, source []byte) []ports.CodeContainer {
-	containers := make([]ports.CodeContainer, 0)
+func (r *TreeSitterRepo) extractContainers(result *ports.CodeParseResult, source []byte) []ports.CodeContainer {
+	containers := make([]ports.CodeContainer, 0, len(result.Classes)+len(result.Functions)+len(result.Methods))
 
-	r.walk(root, func(node *sitter.Node) {
-		if !r.isContainerNode(node) {
-			return
+	appendDeclaration := func(declarations []ports.CodeDeclaration) {
+		for _, declaration := range declarations {
+			containers = append(containers, ports.CodeContainer{
+				Name:       declaration.Name,
+				Kind:       declaration.Kind,
+				ParentName: r.findParentContainerNameByRange(declaration.StartByte, declaration.EndByte, source),
+				StartByte:  declaration.StartByte,
+				EndByte:    declaration.EndByte,
+			})
 		}
+	}
 
-		name := r.extractNodeName(node, source)
-		if name == "" {
-			name = node.Type()
-		}
-
-		containers = append(containers, ports.CodeContainer{
-			Name:       name,
-			Kind:       node.Type(),
-			ParentName: r.findParentContainerName(node, source),
-			StartByte:  node.StartByte(),
-			EndByte:    node.EndByte(),
-		})
-	})
+	appendDeclaration(result.Classes)
+	appendDeclaration(result.Functions)
+	appendDeclaration(result.Methods)
 
 	return containers
 }
 
-func (r *TreeSitterRepo) extractImports(root *sitter.Node, source []byte) []ports.CodeImport {
+func (r *TreeSitterRepo) extractImports(matches []queryMatch, source []byte) []ports.CodeImport {
 	imports := make([]ports.CodeImport, 0)
+	seen := make(map[string]struct{})
 
-	r.walk(root, func(node *sitter.Node) {
-		if !r.isImportNode(node) {
-			return
+	for _, match := range matches {
+		importNode := firstCapture(match, "import.definition")
+		if importNode == nil {
+			continue
 		}
 
-		importPath := r.extractImportPath(node, source)
+		importPath := strings.TrimSpace(r.nodeText(firstCapture(match, "import.path"), source))
 		if importPath == "" {
-			importPath = r.nodeText(node, source)
+			importPath = strings.TrimSpace(r.nodeText(importNode, source))
 		}
+		importPath = strings.Trim(importPath, "\"'`")
+
+		key := fmt.Sprintf("%s:%d:%d", importPath, importNode.StartByte(), importNode.EndByte())
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
 
 		imports = append(imports, ports.CodeImport{
 			Path:      importPath,
-			Kind:      node.Type(),
-			StartByte: node.StartByte(),
-			EndByte:   node.EndByte(),
+			Kind:      importNode.Type(),
+			StartByte: importNode.StartByte(),
+			EndByte:   importNode.EndByte(),
 		})
-	})
+	}
 
 	return imports
 }
 
-func (r *TreeSitterRepo) extractDocComments(root *sitter.Node, source []byte) []ports.DocComment {
+func (r *TreeSitterRepo) extractDocComments(matches []queryMatch, source []byte) []ports.DocComment {
 	comments := make([]ports.DocComment, 0)
+	seen := make(map[string]struct{})
 
-	r.walk(root, func(node *sitter.Node) {
-		if !r.isDocCommentNode(node, source) {
-			return
+	for _, match := range matches {
+		for _, commentNode := range match.captures["doc.comment"] {
+			text := strings.TrimSpace(r.nodeText(commentNode, source))
+			if text == "" {
+				continue
+			}
+
+			key := fmt.Sprintf("%d:%d", commentNode.StartByte(), commentNode.EndByte())
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+
+			comments = append(comments, ports.DocComment{
+				Text:      text,
+				Target:    "",
+				StartByte: commentNode.StartByte(),
+				EndByte:   commentNode.EndByte(),
+			})
 		}
-
-		comments = append(comments, ports.DocComment{
-			Text:      strings.TrimSpace(r.nodeText(node, source)),
-			Target:    r.findNextDeclarationName(node, source),
-			StartByte: node.StartByte(),
-			EndByte:   node.EndByte(),
-		})
-	})
+	}
 
 	return comments
 }
 
-func (r *TreeSitterRepo) extractClasses(root *sitter.Node, source []byte) []ports.CodeDeclaration {
-	return r.extractDeclarationsByKind(root, source, r.isClassNode, "class")
-}
-
-func (r *TreeSitterRepo) extractFunctions(root *sitter.Node, source []byte) []ports.CodeDeclaration {
-	return r.extractDeclarationsByKind(root, source, r.isFunctionNode, "function")
-}
-
-func (r *TreeSitterRepo) extractMethods(root *sitter.Node, source []byte) []ports.CodeDeclaration {
-	return r.extractDeclarationsByKind(root, source, r.isMethodNode, "method")
-}
-
-func (r *TreeSitterRepo) extractModuleLevelDeclarations(root *sitter.Node, source []byte) []ports.CodeDeclaration {
-	declarations := make([]ports.CodeDeclaration, 0)
-
-	r.walk(root, func(node *sitter.Node) {
-		if !r.isModuleLevelDeclaration(node) {
-			return
-		}
-
-		name := r.extractNodeName(node, source)
-		if name == "" {
-			return
-		}
-
-		declarations = append(declarations, ports.CodeDeclaration{
-			Name:      name,
-			Kind:      node.Type(),
-			Text:      strings.TrimSpace(r.nodeText(node, source)),
-			StartByte: node.StartByte(),
-			EndByte:   node.EndByte(),
-		})
-	})
-
-	return declarations
-}
-
-func (r *TreeSitterRepo) extractDeclarationsByKind(root *sitter.Node, source []byte, match func(*sitter.Node) bool, kind string) []ports.CodeDeclaration {
-	declarations := make([]ports.CodeDeclaration, 0)
-
-	r.walk(root, func(node *sitter.Node) {
-		if !match(node) {
-			return
-		}
-
-		name := r.extractNodeName(node, source)
-		if name == "" {
-			return
-		}
-
-		declarations = append(declarations, ports.CodeDeclaration{
-			Name:      name,
-			Kind:      kind,
-			Text:      strings.TrimSpace(r.nodeText(node, source)),
-			StartByte: node.StartByte(),
-			EndByte:   node.EndByte(),
-		})
-	})
-
-	return declarations
-}
-
-func (r *TreeSitterRepo) resolveLanguage(language string) (*sitter.Language, error) {
+func (r *TreeSitterRepo) resolveLanguage(language string) (resolvedLanguage, error) {
 	switch strings.ToLower(strings.TrimSpace(language)) {
 	case "go", "golang":
-		return tsgo.GetLanguage(), nil
-	case "javascript", "js":
-		return tsjavascript.GetLanguage(), nil
-	case "typescript", "ts":
-		return tstypescript.GetLanguage(), nil
+		return resolvedLanguage{name: "go", language: tsgo.GetLanguage()}, nil
+	case "javascript", "js", "jsx":
+		return resolvedLanguage{name: "javascript", language: tsjavascript.GetLanguage()}, nil
+	case "typescript", "ts", "tsx":
+		return resolvedLanguage{name: "typescript", language: tstypescript.GetLanguage()}, nil
 	case "python", "py":
-		return tspython.GetLanguage(), nil
+		return resolvedLanguage{name: "python", language: tspython.GetLanguage()}, nil
 	case "java":
-		return tsjava.GetLanguage(), nil
+		return resolvedLanguage{name: "java", language: tsjava.GetLanguage()}, nil
 	default:
-		return nil, fmt.Errorf("unsupported language %q", language)
+		return resolvedLanguage{}, fmt.Errorf("unsupported language %q", language)
 	}
 }
 
-func (r *TreeSitterRepo) walk(node *sitter.Node, visit func(*sitter.Node)) {
-	if node == nil {
-		return
+func (r *TreeSitterRepo) loadQuerySource(language string) ([]byte, error) {
+	queryPath := path.Join("queries", language+".scm")
+	querySource, err := queryFiles.ReadFile(queryPath)
+	if err != nil {
+		return nil, fmt.Errorf("read tree-sitter query file %q: %w", queryPath, err)
 	}
 
-	visit(node)
-	for i := uint32(0); i < node.ChildCount(); i++ {
-		r.walk(node.Child(int(i)), visit)
+	return querySource, nil
+}
+
+func firstCapture(match queryMatch, captureName string) *sitter.Node {
+	nodes := match.captures[captureName]
+	if len(nodes) == 0 {
+		return nil
 	}
+
+	return nodes[0]
 }
 
 func (r *TreeSitterRepo) nodeText(node *sitter.Node, source []byte) string {
@@ -302,23 +376,6 @@ func (r *TreeSitterRepo) nodeText(node *sitter.Node, source []byte) string {
 	}
 
 	return string(source[start:end])
-}
-
-func (r *TreeSitterRepo) extractNodeName(node *sitter.Node, source []byte) string {
-	if node == nil {
-		return ""
-	}
-
-	for _, fieldName := range []string{"name", "declarator", "field", "property", "alias"} {
-		child := node.ChildByFieldName(fieldName)
-		if child != nil {
-			if name := r.extractIdentifier(child, source); name != "" {
-				return name
-			}
-		}
-	}
-
-	return r.extractIdentifier(node, source)
 }
 
 func (r *TreeSitterRepo) extractIdentifier(node *sitter.Node, source []byte) string {
@@ -340,153 +397,8 @@ func (r *TreeSitterRepo) extractIdentifier(node *sitter.Node, source []byte) str
 	return ""
 }
 
-func (r *TreeSitterRepo) findParentContainerName(node *sitter.Node, source []byte) string {
-	for parent := node.Parent(); parent != nil; parent = parent.Parent() {
-		if r.isContainerNode(parent) {
-			name := r.extractNodeName(parent, source)
-			if name != "" {
-				return name
-			}
-		}
-	}
-
+func (r *TreeSitterRepo) findParentContainerNameByRange(startByte uint32, endByte uint32, source []byte) string {
+	// Query captures return declaration ranges but not parent captures. Keep this hook
+	// small for now; nested parent names can be added with language-specific captures.
 	return ""
-}
-
-func (r *TreeSitterRepo) findNextDeclarationName(node *sitter.Node, source []byte) string {
-	parent := node.Parent()
-	if parent == nil {
-		return ""
-	}
-
-	foundCurrent := false
-	for i := uint32(0); i < parent.ChildCount(); i++ {
-		child := parent.Child(int(i))
-		if child == nil {
-			continue
-		}
-
-		if child == node {
-			foundCurrent = true
-			continue
-		}
-
-		if !foundCurrent {
-			continue
-		}
-
-		if r.isDeclarationNode(child) {
-			return r.extractNodeName(child, source)
-		}
-	}
-
-	return ""
-}
-
-func (r *TreeSitterRepo) extractImportPath(node *sitter.Node, source []byte) string {
-	for i := uint32(0); i < node.ChildCount(); i++ {
-		child := node.Child(int(i))
-		if child == nil {
-			continue
-		}
-
-		childType := child.Type()
-		if childType == "interpreted_string_literal" || childType == "raw_string_literal" || childType == "string" || childType == "string_literal" {
-			return strings.Trim(r.nodeText(child, source), "\"`'")
-		}
-	}
-
-	return ""
-}
-
-func (r *TreeSitterRepo) isContainerNode(node *sitter.Node) bool {
-	return r.isClassNode(node) || r.isFunctionNode(node) || r.isMethodNode(node)
-}
-
-func (r *TreeSitterRepo) isDeclarationNode(node *sitter.Node) bool {
-	return r.isClassNode(node) || r.isFunctionNode(node) || r.isMethodNode(node) || r.isModuleLevelDeclaration(node)
-}
-
-func (r *TreeSitterRepo) isClassNode(node *sitter.Node) bool {
-	if node == nil {
-		return false
-	}
-
-	switch node.Type() {
-	case "class_declaration", "class_definition", "interface_declaration", "struct_type", "type_spec":
-		return true
-	default:
-		return false
-	}
-}
-
-func (r *TreeSitterRepo) isFunctionNode(node *sitter.Node) bool {
-	if node == nil {
-		return false
-	}
-
-	switch node.Type() {
-	case "function_declaration", "function_definition", "function_item", "func_literal":
-		return true
-	default:
-		return false
-	}
-}
-
-func (r *TreeSitterRepo) isMethodNode(node *sitter.Node) bool {
-	if node == nil {
-		return false
-	}
-
-	switch node.Type() {
-	case "method_declaration", "method_definition":
-		return true
-	default:
-		return false
-	}
-}
-
-func (r *TreeSitterRepo) isImportNode(node *sitter.Node) bool {
-	if node == nil {
-		return false
-	}
-
-	switch node.Type() {
-	case "import_declaration", "import_spec", "import_statement", "include", "include_clause":
-		return true
-	default:
-		return false
-	}
-}
-
-func (r *TreeSitterRepo) isDocCommentNode(node *sitter.Node, source []byte) bool {
-	if node == nil || node.Type() != "comment" {
-		return false
-	}
-
-	text := strings.TrimSpace(r.nodeText(node, source))
-	return strings.HasPrefix(text, "//") || strings.HasPrefix(text, "/*") || strings.HasPrefix(text, "#")
-}
-
-func (r *TreeSitterRepo) isModuleLevelDeclaration(node *sitter.Node) bool {
-	if node == nil {
-		return false
-	}
-
-	parent := node.Parent()
-	if parent == nil {
-		return false
-	}
-
-	parentType := parent.Type()
-	if parentType != "source_file" && parentType != "program" && parentType != "module" {
-		return false
-	}
-
-	switch node.Type() {
-	case "const_declaration", "var_declaration", "lexical_declaration", "type_declaration", "type_alias_declaration", "class_declaration", "function_declaration", "function_definition", "method_declaration":
-		return true
-	default:
-		return false
-	}
 }
