@@ -66,13 +66,11 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) error {
 		s.logf("failed to decode change log for snapshot=%s: %v", snapshot.Id, err)
 		return err
 	}
-	s.logf(
-		"decoded change log for snapshot=%s created=%d updated=%d deleted=%d",
-		snapshot.Id,
-		len(changeLogFileContent.Created),
-		len(changeLogFileContent.Updated),
-		len(changeLogFileContent.Deleted),
-	)
+	createdCount := len(changeLogFileContent.Created)
+	updatedCount := len(changeLogFileContent.Updated)
+	deletedCount := len(changeLogFileContent.Deleted)
+	s.logf("decoded change log for snapshot=%s repo=%s branch=%s commit=%s", snapshot.Id, changeLogFileContent.RepoURL, changeLogFileContent.Branch, changeLogFileContent.CommitSHA)
+	s.logf("change log file counts snapshot=%s created=%d updated=%d deleted=%d", snapshot.Id, createdCount, updatedCount, deletedCount)
 
 	blobDirectoryURL, err := deriveDirectoryURL(snapshot.ChangeLogURL)
 	if err != nil {
@@ -85,12 +83,15 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) error {
 	createdFileURLs := make([]string, 0, len(changeLogFileContent.Created)+len(changeLogFileContent.Updated))
 
 	for _, file := range changeLogFileContent.Deleted {
+		s.logf("queued deleted file for chunk deletion snapshot=%s path=%s hash=%s size=%d", snapshot.Id, file.Path, file.FileHash, file.FileSize)
 		deletedFileNames = append(deletedFileNames, file.FileHash)
 	}
 
 	for _, file := range changeLogFileContent.Updated {
+		fileURL := blobDirectoryURL + "/" + file.NewFileHash
+		s.logf("queued updated file for replacement snapshot=%s path=%s old_hash=%s new_hash=%s url=%s new_size=%d", snapshot.Id, file.Path, file.OldFileHash, file.NewFileHash, fileURL, file.NewFileSize)
 		deletedFileNames = append(deletedFileNames, file.OldFileHash)
-		createdFileURLs = append(createdFileURLs, blobDirectoryURL+"/"+file.NewFileHash)
+		createdFileURLs = append(createdFileURLs, fileURL)
 	}
 
 	for _, file := range changeLogFileContent.Created {
@@ -99,13 +100,26 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) error {
 		createdFileURLs = append(createdFileURLs, fileURL)
 	}
 
-	s.logf("fetching %d created files for snapshot=%s with %d blob workers", len(createdFileURLs), snapshot.Id, s.fileFetchWorkerCount)
+	s.logf("prepared chunking work snapshot=%s files_to_fetch=%d chunks_to_delete_for_files=%d", snapshot.Id, len(createdFileURLs), len(deletedFileNames))
 
-	err = s.chunkRepo.DeleteChunksForFiles(context.Background(), deletedFileNames)
-	if err != nil {
-		s.logf("failed to delete chunks for files: %v", err)
-		return err
+	if len(deletedFileNames) > 0 {
+		s.logf("deleting existing chunks snapshot=%s file_hashes=%d", snapshot.Id, len(deletedFileNames))
+		err = s.chunkRepo.DeleteChunksForFiles(context.Background(), deletedFileNames)
+		if err != nil {
+			s.logf("failed to delete chunks snapshot=%s file_hashes=%d: %v", snapshot.Id, len(deletedFileNames), err)
+			return err
+		}
+		s.logf("deleted existing chunks snapshot=%s file_hashes=%d", snapshot.Id, len(deletedFileNames))
+	} else {
+		s.logf("no deleted or updated files requiring chunk deletion snapshot=%s", snapshot.Id)
 	}
+
+	if len(createdFileURLs) == 0 {
+		s.logf("no created or updated files to fetch snapshot=%s; deletion-only change log handled", snapshot.Id)
+		return nil
+	}
+
+	s.logf("fetching %d created/updated files for snapshot=%s with %d blob workers", len(createdFileURLs), snapshot.Id, s.fileFetchWorkerCount)
 
 	fetchedFilesChannel := make(chan *shareddomain.FileJob)
 	normalizedFilesChannel := make(chan *shareddomain.FileJob)
@@ -136,13 +150,13 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) error {
 		return err
 	}
 
-	s.logf("completed blob fetch stage for snapshot=%s", snapshot.Id)
+	s.logf("completed blob fetch stage for snapshot=%s fetched_files=%d", snapshot.Id, len(createdFileURLs))
 	close(fetchedFilesChannel)
 	normalizationWG.Wait()
 	s.logf("completed normalization stage for snapshot=%s", snapshot.Id)
 	close(normalizedFilesChannel)
 	extractionWG.Wait()
-	s.logf("completed extraction stage for snapshot=%s", snapshot.Id)
+	s.logf("completed extraction and chunk persistence stage for snapshot=%s", snapshot.Id)
 
 	select {
 	case workerErr := <-errCh:
@@ -153,7 +167,7 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) error {
 	default:
 	}
 
-	s.logf("finished chunking pipeline for snapshot=%s", snapshot.Id)
+	s.logf("finished chunking pipeline for snapshot=%s created_files=%d updated_files=%d deleted_files=%d fetched_files=%d deleted_file_hashes=%d", snapshot.Id, createdCount, updatedCount, deletedCount, len(createdFileURLs), len(deletedFileNames))
 	return nil
 }
 
@@ -217,19 +231,23 @@ func (s *ChunkingService) extractionWorker(normalizedFilesChannel <-chan *shared
 			continue
 		}
 
-		s.logf("extraced data symbols=%d containers=%d imports=%d doc comments=%d classes=%d functions=%d methods=%d module level declarations=%d", len(extractedData.Symbols), len(extractedData.Containers), len(extractedData.Imports), len(extractedData.DocComments), len(extractedData.Classes), len(extractedData.Functions), len(extractedData.Methods), len(extractedData.ModuleLevelDeclarations))
+		s.logf("extracted data path=%s symbols=%d containers=%d imports=%d doc_comments=%d classes=%d functions=%d methods=%d module_level_declarations=%d", fileJob.Path, len(extractedData.Symbols), len(extractedData.Containers), len(extractedData.Imports), len(extractedData.DocComments), len(extractedData.Classes), len(extractedData.Functions), len(extractedData.Methods), len(extractedData.ModuleLevelDeclarations))
 
 		chunks := buildChunks(snapshot, fileJob, extractedData)
-		s.logf("built %d chunks for snapshot with id=%s", len(chunks), snapshot.Id)
+		s.logf("built chunks snapshot=%s path=%s chunks=%d", snapshot.Id, fileJob.Path, len(chunks))
 
 		for _, chunk := range chunks {
 			err = s.chunkRepo.CreateChunk(context.Background(), &chunk)
 			if err != nil {
-				s.logf("failed to write chunk with id=%s to database: %v", chunk.ChunkID, err)
-
+				s.logf("failed to write chunk to database snapshot=%s path=%s chunk_id=%s symbol=%s type=%s: %v", snapshot.Id, fileJob.Path, chunk.ChunkID, chunk.SymbolName, chunk.SymbolType, err)
+				select {
+				case errCh <- fmt.Errorf("create chunk %s for %s: %w", chunk.ChunkID, fileJob.Path, err):
+				default:
+				}
+				continue
 			}
 
-			s.logf("stored extracted chunk chunk_id=%s symbol=%s type=%s", chunk.ChunkID, chunk.SymbolName, chunk.SymbolType)
+			s.logf("stored extracted chunk snapshot=%s path=%s chunk_id=%s symbol=%s type=%s start_line=%d end_line=%d content_bytes=%d", snapshot.Id, fileJob.Path, chunk.ChunkID, chunk.SymbolName, chunk.SymbolType, chunk.StartLine, chunk.EndLine, len(chunk.Content))
 		}
 	}
 }
