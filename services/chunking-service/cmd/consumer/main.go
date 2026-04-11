@@ -41,10 +41,18 @@ func main() {
 		logger.Fatalf("failed to chunk repo: %v", err)
 	}
 
+	kafkaProducer, err := sharedkafka.NewProducer()
+	if err != nil {
+		logger.Fatalf("failed to create kafka producer: %v", err)
+	}
+	defer kafkaProducer.Close()
+
 	chunkingService := service.NewChunkingService(&service.ChunkingServiceInput{
 		Logger:               logger,
 		BlobStoreRepo:        blobStoreRepo,
 		ChunkRepo:            chunkRepo,
+		KafkaProducer:        kafkaProducer,
+		IndexingTopic:        cfg.Kafka.IndexingTopic,
 		NormalizationService: normalizationService,
 		ExtractionService:    extractionService,
 	})

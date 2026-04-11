@@ -14,6 +14,7 @@ import (
 	"github.com/rohandave/tessa-rag/services/chunking-service/internal/chunking/ports"
 	sharedblobstore "github.com/rohandave/tessa-rag/services/shared/blobstore"
 	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
+	sharedkafka "github.com/rohandave/tessa-rag/services/shared/kafka"
 	sharedutil "github.com/rohandave/tessa-rag/services/shared/util"
 )
 
@@ -21,6 +22,8 @@ type ChunkingServiceInput struct {
 	Logger               *log.Logger
 	BlobStoreRepo        *sharedblobstore.Repo
 	ChunkRepo            *ports.ChunkRepo
+	KafkaProducer        sharedkafka.Producer
+	IndexingTopic        string
 	NormalizationService *NormalizationService
 	ExtractionService    *ExtractionService
 }
@@ -30,6 +33,8 @@ type ChunkingService struct {
 	normalizationService *NormalizationService
 	extractionService    *ExtractionService
 	chunkRepo            *ports.ChunkRepo
+	kafkaProducer        sharedkafka.Producer
+	indexingTopic        string
 	blobStoreRepo        *sharedblobstore.Repo
 
 	normalizationWorkerCount int
@@ -43,6 +48,8 @@ func NewChunkingService(input *ChunkingServiceInput) *ChunkingService {
 		blobStoreRepo:            input.BlobStoreRepo,
 		normalizationService:     input.NormalizationService,
 		chunkRepo:                input.ChunkRepo,
+		kafkaProducer:            input.KafkaProducer,
+		indexingTopic:            input.IndexingTopic,
 		extractionService:        input.ExtractionService,
 		normalizationWorkerCount: 5,
 		extractionWorkerCount:    5,
@@ -104,12 +111,27 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) error {
 
 	if len(deletedFileNames) > 0 {
 		s.logf("deleting existing chunks snapshot=%s file_hashes=%d", snapshot.Id, len(deletedFileNames))
-		err = s.chunkRepo.DeleteChunksForFiles(context.Background(), deletedFileNames)
+		deletedChunkIDs, err := s.chunkRepo.DeleteChunksForFiles(context.Background(), deletedFileNames)
 		if err != nil {
 			s.logf("failed to delete chunks snapshot=%s file_hashes=%d: %v", snapshot.Id, len(deletedFileNames), err)
 			return err
 		}
-		s.logf("deleted existing chunks snapshot=%s file_hashes=%d", snapshot.Id, len(deletedFileNames))
+		s.logf("marked existing chunks pending delete snapshot=%s file_hashes=%d chunks=%d", snapshot.Id, len(deletedFileNames), len(deletedChunkIDs))
+
+		for _, chunkID := range deletedChunkIDs {
+			err := s.publishChunkIndexingEvent(shareddomain.ChunkIndexingEvent{
+				EventType:  shareddomain.ChunkDeleteRequestedEvent,
+				ChunkID:    chunkID,
+				RepoURL:    snapshot.RepoURL,
+				Branch:     snapshot.Branch,
+				SnapshotID: snapshot.Id,
+			})
+			if err != nil {
+				s.logf("failed to publish chunk delete event snapshot=%s chunk_id=%s: %v", snapshot.Id, chunkID, err)
+				return err
+			}
+		}
+		s.logf("published chunk delete events snapshot=%s chunks=%d", snapshot.Id, len(deletedChunkIDs))
 	} else {
 		s.logf("no deleted or updated files requiring chunk deletion snapshot=%s", snapshot.Id)
 	}
@@ -168,21 +190,6 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) error {
 	}
 
 	s.logf("finished chunking pipeline for snapshot=%s created_files=%d updated_files=%d deleted_files=%d fetched_files=%d deleted_file_hashes=%d", snapshot.Id, createdCount, updatedCount, deletedCount, len(createdFileURLs), len(deletedFileNames))
-	return nil
-}
-
-func (s *ChunkingService) updateChunksForUpdatedFiles(updatedFiles []shareddomain.UpdatedChangeLogFile) error {
-	oldFileNames := make([]string, 0, len(updatedFiles))
-
-	for _, file := range updatedFiles {
-		oldFileNames = append(oldFileNames, file.OldFileHash)
-	}
-
-	err := s.chunkRepo.DeleteChunksForFiles(context.Background(), oldFileNames)
-	if err != nil {
-		return err
-	}
-
 	return nil
 }
 
@@ -247,9 +254,43 @@ func (s *ChunkingService) extractionWorker(normalizedFilesChannel <-chan *shared
 				continue
 			}
 
+			err = s.publishChunkIndexingEvent(shareddomain.ChunkIndexingEvent{
+				EventType:  shareddomain.ChunkIndexRequestedEvent,
+				ChunkID:    chunk.ChunkID,
+				RepoURL:    chunk.RepoURL,
+				Branch:     chunk.Branch,
+				SnapshotID: chunk.SnapshotID,
+				FileName:   chunk.FileName,
+				FilePath:   chunk.FilePath,
+			})
+			if err != nil {
+				s.logf("failed to publish chunk index event snapshot=%s path=%s chunk_id=%s: %v", snapshot.Id, fileJob.Path, chunk.ChunkID, err)
+				select {
+				case errCh <- fmt.Errorf("publish chunk index event %s for %s: %w", chunk.ChunkID, fileJob.Path, err):
+				default:
+				}
+				continue
+			}
+
 			s.logf("stored extracted chunk snapshot=%s path=%s chunk_id=%s symbol=%s type=%s start_line=%d end_line=%d content_bytes=%d", snapshot.Id, fileJob.Path, chunk.ChunkID, chunk.SymbolName, chunk.SymbolType, chunk.StartLine, chunk.EndLine, len(chunk.Content))
 		}
 	}
+}
+
+func (s *ChunkingService) publishChunkIndexingEvent(event shareddomain.ChunkIndexingEvent) error {
+	if s.kafkaProducer == nil {
+		return fmt.Errorf("kafka producer is not configured")
+	}
+	if s.indexingTopic == "" {
+		return fmt.Errorf("indexing topic is not configured")
+	}
+
+	value, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("marshal chunk indexing event: %w", err)
+	}
+
+	return s.kafkaProducer.Produce(s.indexingTopic, []byte(event.ChunkID), value)
 }
 
 func buildChunks(snapshot shareddomain.Snapshot, fileJob *shareddomain.FileJob, extractedData *ports.CodeParseResult) []shareddomain.Chunk {

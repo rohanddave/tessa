@@ -20,6 +20,7 @@ x-chunking-service-environment: &chunking-service-environment
   SERVICE_NAME: chunking-service
   KAFKA_BROKERS: kafka:9092
   KAFKA_SNAPSHOTS_TOPIC: snapshot.created
+  KAFKA_INDEXING_TOPIC: chunking.chunk-indexing-events
   SNAPSHOT_STORE_HOST: snapshot-store
   SNAPSHOT_STORE_PORT: "5432"
   SNAPSHOT_STORE_DB: snapshot_store

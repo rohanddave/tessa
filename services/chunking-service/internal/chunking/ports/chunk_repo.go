@@ -177,7 +177,7 @@ func (r *ChunkRepo) ListChunksBySnapshotID(ctx context.Context, snapshotID strin
 	return chunks, nil
 }
 
-func (r *ChunkRepo) DeleteChunk(ctx context.Context, chunkID string) error {
+func (r *ChunkRepo) DeleteChunk(ctx context.Context, chunkID string) ([]string, error) {
 	const query = `
 		UPDATE chunks
 		SET
@@ -186,17 +186,13 @@ func (r *ChunkRepo) DeleteChunk(ctx context.Context, chunkID string) error {
 			pinecone_status = $4,
 			neo4j_status = $5
 		WHERE chunk_id = $1
+		RETURNING chunk_id
 	`
 
-	_, err := r.pool.Exec(ctx, query, chunkID, chunkStatusPendingDelete, defaultTargetDeleteStatus, defaultTargetDeleteStatus, defaultTargetDeleteStatus)
-	if err != nil {
-		return fmt.Errorf("mark chunk %s pending delete: %w", chunkID, err)
-	}
-
-	return nil
+	return r.markChunksPendingDelete(ctx, query, chunkID)
 }
 
-func (r *ChunkRepo) DeleteChunksForFile(ctx context.Context, fileName string) error {
+func (r *ChunkRepo) DeleteChunksForFile(ctx context.Context, fileName string) ([]string, error) {
 	const query = `
 		UPDATE chunks
 		SET
@@ -205,19 +201,15 @@ func (r *ChunkRepo) DeleteChunksForFile(ctx context.Context, fileName string) er
 			pinecone_status = $4,
 			neo4j_status = $5
 		WHERE file_name = $1
+		RETURNING chunk_id
 	`
 
-	_, err := r.pool.Exec(ctx, query, fileName, chunkStatusPendingDelete, defaultTargetDeleteStatus, defaultTargetDeleteStatus, defaultTargetDeleteStatus)
-	if err != nil {
-		return fmt.Errorf("mark chunks pending delete for file with hash %s: %w", fileName, err)
-	}
-
-	return nil
+	return r.markChunksPendingDelete(ctx, query, fileName)
 }
 
-func (r *ChunkRepo) DeleteChunksForFiles(ctx context.Context, fileNames []string) error {
+func (r *ChunkRepo) DeleteChunksForFiles(ctx context.Context, fileNames []string) ([]string, error) {
 	if len(fileNames) == 0 {
-		return nil // nothing to delete
+		return nil, nil // nothing to delete
 	}
 
 	const query = `
@@ -228,14 +220,33 @@ func (r *ChunkRepo) DeleteChunksForFiles(ctx context.Context, fileNames []string
 			pinecone_status = $4,
 			neo4j_status = $5
 		WHERE file_name = ANY($1)
+		RETURNING chunk_id
 	`
 
-	_, err := r.pool.Exec(ctx, query, fileNames, chunkStatusPendingDelete, defaultTargetDeleteStatus, defaultTargetDeleteStatus, defaultTargetDeleteStatus)
+	return r.markChunksPendingDelete(ctx, query, fileNames)
+}
+
+func (r *ChunkRepo) markChunksPendingDelete(ctx context.Context, query string, target any) ([]string, error) {
+	rows, err := r.pool.Query(ctx, query, target, chunkStatusPendingDelete, defaultTargetDeleteStatus, defaultTargetDeleteStatus, defaultTargetDeleteStatus)
 	if err != nil {
-		return fmt.Errorf("mark chunks pending delete for files %v: %w", fileNames, err)
+		return nil, fmt.Errorf("mark chunks pending delete for %v: %w", target, err)
+	}
+	defer rows.Close()
+
+	chunkIDs := make([]string, 0)
+	for rows.Next() {
+		var chunkID string
+		if err := rows.Scan(&chunkID); err != nil {
+			return nil, fmt.Errorf("scan pending delete chunk id for %v: %w", target, err)
+		}
+		chunkIDs = append(chunkIDs, chunkID)
 	}
 
-	return nil
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending delete chunk ids for %v: %w", target, err)
+	}
+
+	return chunkIDs, nil
 }
 
 func (r *ChunkRepo) ensureSchema(ctx context.Context) error {
