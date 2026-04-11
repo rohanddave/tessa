@@ -13,6 +13,13 @@ type ChunkRepo struct {
 	pool *pgxpool.Pool
 }
 
+const (
+	defaultChunkStatus         = "pending_index"
+	defaultTargetIndexStatus   = "pending"
+	defaultTargetDeleteStatus  = "pending_delete"
+	chunkStatusPendingDelete   = "pending_delete"
+)
+
 func NewChunkRepo(ctx context.Context, cfg *sharedpostgres.DatabaseConfig) (*ChunkRepo, error) {
 	dsn := fmt.Sprintf(
 		"postgresql://%s:%s@%s:%s/%s?sslmode=%s",
@@ -42,6 +49,11 @@ func NewChunkRepo(ctx context.Context, cfg *sharedpostgres.DatabaseConfig) (*Chu
 }
 
 func (r *ChunkRepo) CreateChunk(ctx context.Context, chunk *domain.Chunk) error {
+	status := defaultString(chunk.Status, defaultChunkStatus)
+	textSearchEngineStatus := defaultString(chunk.TextSearchEngineStatus, defaultTargetIndexStatus)
+	vectorDbStatus := defaultString(chunk.VectorDbStatus, defaultTargetIndexStatus)
+	graphDbStatus := defaultString(chunk.GraphDbStatus, defaultTargetIndexStatus)
+
 	const query = `
 		INSERT INTO chunks (
 			chunk_id,
@@ -63,10 +75,15 @@ func (r *ChunkRepo) CreateChunk(ctx context.Context, chunk *domain.Chunk) error 
 			end_char,
 			prev_chunk_id,
 			next_chunk_id,
+			status,
+			elasticsearch_status,
+			pinecone_status,
+			neo4j_status,
 			created_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+			$21, $22, $23, $24
 		)
 	`
 
@@ -92,6 +109,10 @@ func (r *ChunkRepo) CreateChunk(ctx context.Context, chunk *domain.Chunk) error 
 		chunk.EndChar,
 		chunk.PrevChunkID,
 		chunk.NextChunkID,
+		status,
+		textSearchEngineStatus,
+		vectorDbStatus,
+		graphDbStatus,
 		chunk.CreatedAt,
 	)
 	if err != nil {
@@ -138,6 +159,10 @@ func (r *ChunkRepo) ListChunksBySnapshotID(ctx context.Context, snapshotID strin
 			&chunk.EndChar,
 			&chunk.PrevChunkID,
 			&chunk.NextChunkID,
+			&chunk.Status,
+			&chunk.TextSearchEngineStatus,
+			&chunk.VectorDbStatus,
+			&chunk.GraphDbStatus,
 			&chunk.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan chunk row: %w", err)
@@ -154,13 +179,18 @@ func (r *ChunkRepo) ListChunksBySnapshotID(ctx context.Context, snapshotID strin
 
 func (r *ChunkRepo) DeleteChunk(ctx context.Context, chunkID string) error {
 	const query = `
-		DELETE FROM chunks
+		UPDATE chunks
+		SET
+			status = $2,
+			elasticsearch_status = $3,
+			pinecone_status = $4,
+			neo4j_status = $5
 		WHERE chunk_id = $1
 	`
 
-	_, err := r.pool.Exec(ctx, query, chunkID)
+	_, err := r.pool.Exec(ctx, query, chunkID, chunkStatusPendingDelete, defaultTargetDeleteStatus, defaultTargetDeleteStatus, defaultTargetDeleteStatus)
 	if err != nil {
-		return fmt.Errorf("delete chunk %s: %w", chunkID, err)
+		return fmt.Errorf("mark chunk %s pending delete: %w", chunkID, err)
 	}
 
 	return nil
@@ -168,13 +198,18 @@ func (r *ChunkRepo) DeleteChunk(ctx context.Context, chunkID string) error {
 
 func (r *ChunkRepo) DeleteChunksForFile(ctx context.Context, fileName string) error {
 	const query = `
-		DELETE FROM chunks
+		UPDATE chunks
+		SET
+			status = $2,
+			elasticsearch_status = $3,
+			pinecone_status = $4,
+			neo4j_status = $5
 		WHERE file_name = $1
 	`
 
-	_, err := r.pool.Exec(ctx, query, fileName)
+	_, err := r.pool.Exec(ctx, query, fileName, chunkStatusPendingDelete, defaultTargetDeleteStatus, defaultTargetDeleteStatus, defaultTargetDeleteStatus)
 	if err != nil {
-		return fmt.Errorf("delete chunks for file with hash %s: %w", fileName, err)
+		return fmt.Errorf("mark chunks pending delete for file with hash %s: %w", fileName, err)
 	}
 
 	return nil
@@ -186,13 +221,18 @@ func (r *ChunkRepo) DeleteChunksForFiles(ctx context.Context, fileNames []string
 	}
 
 	const query = `
-		DELETE FROM chunks
+		UPDATE chunks
+		SET
+			status = $2,
+			elasticsearch_status = $3,
+			pinecone_status = $4,
+			neo4j_status = $5
 		WHERE file_name = ANY($1)
 	`
 
-	_, err := r.pool.Exec(ctx, query, fileNames)
+	_, err := r.pool.Exec(ctx, query, fileNames, chunkStatusPendingDelete, defaultTargetDeleteStatus, defaultTargetDeleteStatus, defaultTargetDeleteStatus)
 	if err != nil {
-		return fmt.Errorf("delete chunks for files %v: %w", fileNames, err)
+		return fmt.Errorf("mark chunks pending delete for files %v: %w", fileNames, err)
 	}
 
 	return nil
@@ -222,6 +262,10 @@ func (r *ChunkRepo) ensureSchema(ctx context.Context) error {
 			end_char INTEGER NOT NULL,
 			prev_chunk_id TEXT NOT NULL DEFAULT '',
 			next_chunk_id TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'pending_index',
+			elasticsearch_status TEXT NOT NULL DEFAULT 'pending',
+			pinecone_status TEXT NOT NULL DEFAULT 'pending',
+			neo4j_status TEXT NOT NULL DEFAULT 'pending',
 			created_at BIGINT NOT NULL
 		)
 		`,
@@ -231,4 +275,12 @@ func (r *ChunkRepo) ensureSchema(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func defaultString(value string, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+
+	return value
 }
