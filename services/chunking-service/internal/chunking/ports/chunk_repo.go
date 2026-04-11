@@ -180,6 +180,24 @@ func (r *ChunkRepo) DeleteChunksForFile(ctx context.Context, fileName string) er
 	return nil
 }
 
+func (r *ChunkRepo) DeleteChunksForFiles(ctx context.Context, fileNames []string) error {
+	if len(fileNames) == 0 {
+		return nil // nothing to delete
+	}
+
+	const query = `
+		DELETE FROM chunks
+		WHERE file_name = ANY($1)
+	`
+
+	_, err := r.pool.Exec(ctx, query, fileNames)
+	if err != nil {
+		return fmt.Errorf("delete chunks for files %v: %w", fileNames, err)
+	}
+
+	return nil
+}
+
 func (r *ChunkRepo) ensureSchema(ctx context.Context) error {
 	_, err := r.pool.Exec(
 		ctx,

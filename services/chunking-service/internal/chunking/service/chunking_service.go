@@ -31,15 +31,22 @@ type ChunkingService struct {
 	extractionService    *ExtractionService
 	chunkRepo            *ports.ChunkRepo
 	blobStoreRepo        *sharedblobstore.Repo
+
+	normalizationWorkerCount int
+	extractionWorkerCount    int
+	fileFetchWorkerCount     int
 }
 
 func NewChunkingService(input *ChunkingServiceInput) *ChunkingService {
 	return &ChunkingService{
-		logger:               input.Logger,
-		blobStoreRepo:        input.BlobStoreRepo,
-		normalizationService: input.NormalizationService,
-		chunkRepo:            input.ChunkRepo,
-		extractionService:    input.ExtractionService,
+		logger:                   input.Logger,
+		blobStoreRepo:            input.BlobStoreRepo,
+		normalizationService:     input.NormalizationService,
+		chunkRepo:                input.ChunkRepo,
+		extractionService:        input.ExtractionService,
+		normalizationWorkerCount: 5,
+		extractionWorkerCount:    5,
+		fileFetchWorkerCount:     5,
 	}
 }
 
@@ -67,29 +74,52 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) error {
 		len(changeLogFileContent.Deleted),
 	)
 
-	fetchedFilesChannel := make(chan *shareddomain.FileJob)
-	normalizedFilesChannel := make(chan *shareddomain.FileJob)
-	errCh := make(chan error, 1)
-
 	blobDirectoryURL, err := deriveDirectoryURL(snapshot.ChangeLogURL)
 	if err != nil {
 		s.logf("failed to derive blob directory from change log url for snapshot=%s: %v", snapshot.Id, err)
 		return err
 	}
 
-	normalizationWorkerCount := 5
-	extractionWorkerCount := 5
-	fileFetchWorkerCount := 5
+	deletedFileNames := make([]string, 0, len(changeLogFileContent.Deleted)+len(changeLogFileContent.Updated))
+
+	createdFileURLs := make([]string, 0, len(changeLogFileContent.Created)+len(changeLogFileContent.Updated))
+
+	for _, file := range changeLogFileContent.Deleted {
+		deletedFileNames = append(deletedFileNames, file.FileHash)
+	}
+
+	for _, file := range changeLogFileContent.Updated {
+		deletedFileNames = append(deletedFileNames, file.OldFileHash)
+		createdFileURLs = append(createdFileURLs, blobDirectoryURL+"/"+file.NewFileHash)
+	}
+
+	for _, file := range changeLogFileContent.Created {
+		fileURL := blobDirectoryURL + "/" + file.FileHash
+		s.logf("queued file for fetching snapshot=%s path=%s hash=%s url=%s size=%d", snapshot.Id, file.Path, file.FileHash, fileURL, file.FileSize)
+		createdFileURLs = append(createdFileURLs, fileURL)
+	}
+
+	s.logf("fetching %d created files for snapshot=%s with %d blob workers", len(createdFileURLs), snapshot.Id, s.fileFetchWorkerCount)
+
+	err = s.chunkRepo.DeleteChunksForFiles(context.Background(), deletedFileNames)
+	if err != nil {
+		s.logf("failed to delete chunks for files: %v", err)
+		return err
+	}
+
+	fetchedFilesChannel := make(chan *shareddomain.FileJob)
+	normalizedFilesChannel := make(chan *shareddomain.FileJob)
+	errCh := make(chan error, 1)
 
 	var normalizationWG sync.WaitGroup
 	var extractionWG sync.WaitGroup
 
-	for range normalizationWorkerCount {
+	for range s.normalizationWorkerCount {
 		normalizationWG.Add(1)
 		go s.normalizationWorker(fetchedFilesChannel, normalizedFilesChannel, &normalizationWG, errCh)
 	}
 
-	for range extractionWorkerCount {
+	for range s.extractionWorkerCount {
 		extractionWG.Add(1)
 		go s.extractionWorker(
 			normalizedFilesChannel,
@@ -99,17 +129,7 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) error {
 		)
 	}
 
-	// TODO: handle updated and deleted files as well
-	fileURLs := make([]string, 0, len(changeLogFileContent.Created))
-
-	for _, file := range changeLogFileContent.Created {
-		fileURL := blobDirectoryURL + "/" + file.FileHash
-		s.logf("queued file for fetching snapshot=%s path=%s hash=%s url=%s size=%d", snapshot.Id, file.Path, file.FileHash, fileURL, file.FileSize)
-		fileURLs = append(fileURLs, fileURL)
-	}
-	s.logf("fetching %d created files for snapshot=%s with %d blob workers", len(fileURLs), snapshot.Id, fileFetchWorkerCount)
-
-	if err := s.blobStoreRepo.GetFiles(fileURLs, fetchedFilesChannel, fileFetchWorkerCount); err != nil {
+	if err := s.blobStoreRepo.GetFiles(createdFileURLs, fetchedFilesChannel, s.fileFetchWorkerCount); err != nil {
 		s.logf("failed while fetching files for snapshot=%s: %v", snapshot.Id, err)
 		close(fetchedFilesChannel)
 		close(normalizedFilesChannel)
@@ -134,6 +154,21 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) error {
 	}
 
 	s.logf("finished chunking pipeline for snapshot=%s", snapshot.Id)
+	return nil
+}
+
+func (s *ChunkingService) updateChunksForUpdatedFiles(updatedFiles []shareddomain.UpdatedChangeLogFile) error {
+	oldFileNames := make([]string, 0, len(updatedFiles))
+
+	for _, file := range updatedFiles {
+		oldFileNames = append(oldFileNames, file.OldFileHash)
+	}
+
+	err := s.chunkRepo.DeleteChunksForFiles(context.Background(), oldFileNames)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
