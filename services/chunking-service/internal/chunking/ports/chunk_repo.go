@@ -46,7 +46,6 @@ func (r *ChunkRepo) CreateChunk(ctx context.Context, chunk *domain.Chunk) error 
 		INSERT INTO chunks (
 			chunk_id,
 			repo_url,
-			file_hash,
 			file_name,
 			branch,
 			commit_sha,
@@ -54,7 +53,8 @@ func (r *ChunkRepo) CreateChunk(ctx context.Context, chunk *domain.Chunk) error 
 			file_path,
 			document_type,
 			language,
-			text,
+			content,
+			content_hash,
 			symbol_name,
 			symbol_type,
 			start_line,
@@ -75,7 +75,6 @@ func (r *ChunkRepo) CreateChunk(ctx context.Context, chunk *domain.Chunk) error 
 		query,
 		chunk.ChunkID,
 		chunk.RepoURL,
-		chunk.FileHash,
 		chunk.FileName,
 		chunk.Branch,
 		chunk.CommitSHA,
@@ -83,7 +82,8 @@ func (r *ChunkRepo) CreateChunk(ctx context.Context, chunk *domain.Chunk) error 
 		chunk.FilePath,
 		chunk.DocumentType,
 		chunk.Language,
-		chunk.Text,
+		chunk.Content,
+		chunk.ContentHash,
 		chunk.SymbolName,
 		chunk.SymbolType,
 		chunk.StartLine,
@@ -121,7 +121,6 @@ func (r *ChunkRepo) ListChunksBySnapshotID(ctx context.Context, snapshotID strin
 		if err := rows.Scan(
 			&chunk.ChunkID,
 			&chunk.RepoURL,
-			&chunk.FileHash,
 			&chunk.FileName,
 			&chunk.Branch,
 			&chunk.CommitSHA,
@@ -129,7 +128,8 @@ func (r *ChunkRepo) ListChunksBySnapshotID(ctx context.Context, snapshotID strin
 			&chunk.FilePath,
 			&chunk.DocumentType,
 			&chunk.Language,
-			&chunk.Text,
+			&chunk.Content,
+			&chunk.ContentHash,
 			&chunk.SymbolName,
 			&chunk.SymbolType,
 			&chunk.StartLine,
@@ -166,15 +166,15 @@ func (r *ChunkRepo) DeleteChunk(ctx context.Context, chunkID string) error {
 	return nil
 }
 
-func (r *ChunkRepo) DeleteChunksForFile(ctx context.Context, fileHash string) error {
+func (r *ChunkRepo) DeleteChunksForFile(ctx context.Context, fileName string) error {
 	const query = `
 		DELETE FROM chunks
-		WHERE file_hash = $1
+		WHERE file_name = $1
 	`
 
-	_, err := r.pool.Exec(ctx, query, fileHash)
+	_, err := r.pool.Exec(ctx, query, fileName)
 	if err != nil {
-		return fmt.Errorf("delete chunks for file with hash %s: %w", fileHash, err)
+		return fmt.Errorf("delete chunks for file with hash %s: %w", fileName, err)
 	}
 
 	return nil
@@ -187,7 +187,6 @@ func (r *ChunkRepo) ensureSchema(ctx context.Context) error {
 		CREATE TABLE IF NOT EXISTS chunks (
 			chunk_id TEXT PRIMARY KEY,
 			repo_url TEXT NOT NULL,
-			file_hash TEXT NOT NULL,
 			file_name TEXT NOT NULL,
 			branch TEXT NOT NULL DEFAULT '',
 			commit_sha TEXT NOT NULL DEFAULT '',
@@ -195,7 +194,8 @@ func (r *ChunkRepo) ensureSchema(ctx context.Context) error {
 			file_path TEXT NOT NULL,
 			document_type TEXT NOT NULL DEFAULT '',
 			language TEXT NOT NULL DEFAULT '',
-			text TEXT NOT NULL,
+			content TEXT NOT NULL,
+			content_hash TEXT NOT NULL,
 			symbol_name TEXT NOT NULL DEFAULT '',
 			symbol_type TEXT NOT NULL DEFAULT '',
 			start_line INTEGER NOT NULL,

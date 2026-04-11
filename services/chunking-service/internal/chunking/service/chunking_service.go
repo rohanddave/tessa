@@ -200,22 +200,26 @@ func (s *ChunkingService) extractionWorker(normalizedFilesChannel <-chan *shared
 }
 
 func buildChunks(snapshot shareddomain.Snapshot, fileJob *shareddomain.FileJob, extractedData *ports.CodeParseResult) []shareddomain.Chunk {
-	declarations := collectChunkDeclarations(extractedData)
-	if len(declarations) == 0 {
+	chunkUnits := collectChunkUnits(extractedData)
+	if len(chunkUnits) == 0 {
 		chunkID := sharedutil.GenerateUUID()
-		return []shareddomain.Chunk{buildChunk(snapshot, fileJob, chunkID, ports.CodeDeclaration{
+		endByte := uint32(0)
+		if fileJob != nil {
+			endByte = uint32(len(fileJob.Content))
+		}
+
+		return []shareddomain.Chunk{buildChunk(snapshot, fileJob, chunkID, chunkUnit{
 			Name:      "",
-			Kind:      "",
-			Text:      "",
+			Kind:      "file",
 			StartByte: 0,
-			EndByte:   uint32(len(fileJob.Content)),
+			EndByte:   endByte,
 		})}
 	}
 
-	chunks := make([]shareddomain.Chunk, 0, len(declarations))
-	for _, declaration := range declarations {
+	chunks := make([]shareddomain.Chunk, 0, len(chunkUnits))
+	for _, unit := range chunkUnits {
 		chunkID := sharedutil.GenerateUUID()
-		chunks = append(chunks, buildChunk(snapshot, fileJob, chunkID, declaration))
+		chunks = append(chunks, buildChunk(snapshot, fileJob, chunkID, unit))
 	}
 
 	for i := range chunks {
@@ -230,26 +234,42 @@ func buildChunks(snapshot shareddomain.Snapshot, fileJob *shareddomain.FileJob, 
 	return chunks
 }
 
-func collectChunkDeclarations(extractedData *ports.CodeParseResult) []ports.CodeDeclaration {
+type chunkUnit struct {
+	Name      string
+	Kind      string
+	StartByte uint32
+	EndByte   uint32
+}
+
+func collectChunkUnits(extractedData *ports.CodeParseResult) []chunkUnit {
 	if extractedData == nil {
 		return nil
 	}
 
-	declarations := make([]ports.CodeDeclaration, 0, len(extractedData.Classes)+len(extractedData.Functions)+len(extractedData.Methods)+len(extractedData.ModuleLevelDeclarations))
+	units := make([]chunkUnit, 0, len(extractedData.Classes)+len(extractedData.Functions)+len(extractedData.Methods)+len(extractedData.ModuleLevelDeclarations)+len(extractedData.Symbols)+len(extractedData.Containers)+len(extractedData.Imports)+len(extractedData.DocComments))
 	seen := make(map[string]struct{})
+
+	appendUnit := func(unit chunkUnit) {
+		if unit.StartByte >= unit.EndByte {
+			return
+		}
+
+		key := fmt.Sprintf("%s:%s:%d:%d", unit.Kind, unit.Name, unit.StartByte, unit.EndByte)
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		units = append(units, unit)
+	}
 
 	appendDeclarations := func(items []ports.CodeDeclaration) {
 		for _, declaration := range items {
-			if declaration.StartByte >= declaration.EndByte {
-				continue
-			}
-
-			key := fmt.Sprintf("%s:%s:%d:%d", declaration.Kind, declaration.Name, declaration.StartByte, declaration.EndByte)
-			if _, exists := seen[key]; exists {
-				continue
-			}
-			seen[key] = struct{}{}
-			declarations = append(declarations, declaration)
+			appendUnit(chunkUnit{
+				Name:      declaration.Name,
+				Kind:      declaration.Kind,
+				StartByte: declaration.StartByte,
+				EndByte:   declaration.EndByte,
+			})
 		}
 	}
 
@@ -258,16 +278,57 @@ func collectChunkDeclarations(extractedData *ports.CodeParseResult) []ports.Code
 	appendDeclarations(extractedData.Methods)
 	appendDeclarations(extractedData.ModuleLevelDeclarations)
 
-	return declarations
+	for _, symbol := range extractedData.Symbols {
+		appendUnit(chunkUnit{
+			Name:      symbol.Name,
+			Kind:      "symbol:" + symbol.Kind,
+			StartByte: symbol.StartByte,
+			EndByte:   symbol.EndByte,
+		})
+	}
+
+	for _, container := range extractedData.Containers {
+		appendUnit(chunkUnit{
+			Name:      container.Name,
+			Kind:      "container:" + container.Kind,
+			StartByte: container.StartByte,
+			EndByte:   container.EndByte,
+		})
+	}
+
+	for _, item := range extractedData.Imports {
+		appendUnit(chunkUnit{
+			Name:      item.Path,
+			Kind:      "import",
+			StartByte: item.StartByte,
+			EndByte:   item.EndByte,
+		})
+	}
+
+	for _, comment := range extractedData.DocComments {
+		name := comment.Target
+		if name == "" {
+			name = "doc_comment"
+		}
+
+		appendUnit(chunkUnit{
+			Name:      name,
+			Kind:      "doc_comment",
+			StartByte: comment.StartByte,
+			EndByte:   comment.EndByte,
+		})
+	}
+
+	return units
 }
 
-func buildChunk(snapshot shareddomain.Snapshot, fileJob *shareddomain.FileJob, chunkID string, declaration ports.CodeDeclaration) shareddomain.Chunk {
+func buildChunk(snapshot shareddomain.Snapshot, fileJob *shareddomain.FileJob, chunkID string, unit chunkUnit) shareddomain.Chunk {
 	filePath := ""
 	fileName := ""
 	language := "unknown"
-	text := ""
-	startByte := declaration.StartByte
-	endByte := declaration.EndByte
+	content := ""
+	startByte := unit.StartByte
+	endByte := unit.EndByte
 	startLine := 0
 	endLine := 0
 
@@ -275,14 +336,13 @@ func buildChunk(snapshot shareddomain.Snapshot, fileJob *shareddomain.FileJob, c
 		filePath = fileJob.Path
 		fileName = path.Base(fileJob.Path)
 		language = normalizeLanguage(fileJob.Extension)
-		text = extractChunkText(fileJob.Content, startByte, endByte)
+		content = extractChunkText(fileJob.Content, startByte, endByte)
 		startLine, endLine = byteRangeToLineRange(fileJob.Content, startByte, endByte)
 	}
 
 	chunk := shareddomain.Chunk{
 		ChunkID:      chunkID,
 		RepoURL:      snapshot.RepoURL,
-		FileHash:     sharedutil.HashString(text),
 		FileName:     fileName,
 		Branch:       snapshot.Branch,
 		CommitSHA:    snapshot.CommitSHA,
@@ -290,9 +350,10 @@ func buildChunk(snapshot shareddomain.Snapshot, fileJob *shareddomain.FileJob, c
 		FilePath:     filePath,
 		DocumentType: "code",
 		Language:     language,
-		Text:         text,
-		SymbolName:   declaration.Name,
-		SymbolType:   declaration.Kind,
+		Content:      content,
+		ContentHash:  sharedutil.HashString(content),
+		SymbolName:   unit.Name,
+		SymbolType:   unit.Kind,
 		StartLine:    startLine,
 		EndLine:      endLine,
 		StartChar:    int(startByte),
