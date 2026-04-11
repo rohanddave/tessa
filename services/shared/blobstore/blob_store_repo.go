@@ -17,15 +17,6 @@ import (
 	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
 )
 
-type Config struct {
-	Endpoint        string
-	Region          string
-	Bucket          string
-	AccessKeyID     string
-	SecretAccessKey string
-	UseSSL          string
-}
-
 type Repo struct {
 	client   *miniosdk.Client
 	endpoint string
@@ -34,17 +25,6 @@ type Repo struct {
 }
 
 const extensionMetadataKey = "extension"
-
-func LoadConfig() Config {
-	return Config{
-		Endpoint:        envOrDefault("S3_ENDPOINT", "localhost:9000"),
-		Region:          envOrDefault("S3_REGION", "us-east-1"),
-		Bucket:          envOrDefault("S3_BUCKET", "repo-sync"),
-		AccessKeyID:     envOrDefault("S3_ACCESS_KEY_ID", "minioadmin"),
-		SecretAccessKey: envOrDefault("S3_SECRET_ACCESS_KEY", "minioadmin"),
-		UseSSL:          envOrDefault("S3_USE_SSL", "false"),
-	}
-}
 
 func NewRepo() (*Repo, error) {
 	cfg := LoadConfig()

@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+
+	"github.com/google/uuid"
 )
 
 func EnvOrDefault(key, fallback string) string {
@@ -21,4 +23,8 @@ func HashContent(content []byte) string {
 
 func HashString(s string) string {
 	return HashContent([]byte(s))
+}
+
+func GenerateUUID() string {
+	return uuid.New().String()
 }

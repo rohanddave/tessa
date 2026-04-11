@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	ports "github.com/rohandave/tessa-rag/services/chunking-service/internal/chunking/ports"
 
 	"github.com/rohandave/tessa-rag/services/chunking-service/internal/chunking/service"
 	"github.com/rohandave/tessa-rag/services/chunking-service/internal/config"
@@ -32,9 +35,16 @@ func main() {
 	extractionService := service.NewExtractionService(&service.ExtractionServiceInput{
 		CodeParser: codeParser,
 	})
+
+	chunkRepo, err := ports.NewChunkRepo(context.Background(), cfg.Database)
+	if err != nil {
+		logger.Fatalf("failed to chunk repo: %v", err)
+	}
+
 	chunkingService := service.NewChunkingService(&service.ChunkingServiceInput{
 		Logger:               logger,
 		BlobStoreRepo:        blobStoreRepo,
+		ChunkRepo:            chunkRepo,
 		NormalizationService: normalizationService,
 		ExtractionService:    extractionService,
 	})
@@ -83,7 +93,7 @@ func createAndRunNKafkaConsumers(number int, topic string, logger *log.Logger, c
 
 				logger.Printf("consumer %d received snapshot: %s to index", workerID, snapshot.Id)
 
-				_, err = chunkingService.Start(snapshot)
+				err = chunkingService.Start(snapshot)
 				if err != nil {
 					logger.Printf("consumer %d failed to process snapshot %s: %v", workerID, snapshot.Id, err)
 					continue

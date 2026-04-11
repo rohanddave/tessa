@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
@@ -35,7 +36,7 @@ func NewDeleteRepoService(input *DeleteRepoServiceInput, snapshotStoreRepo ports
 }
 
 func (s *DeleteRepoService) DeleteRepo() (err error) {
-	started, err := s.repoRegistryRepo.TryStartDeletion(s.repoURL)
+	started, err := s.repoRegistryRepo.TryStartDeletion(context.Background(), s.repoURL)
 	if err != nil {
 		return err
 	}
@@ -48,7 +49,7 @@ func (s *DeleteRepoService) DeleteRepo() (err error) {
 			return
 		}
 
-		cleanupErr := s.repoRegistryRepo.MarkRegistered(s.repoURL)
+		cleanupErr := s.repoRegistryRepo.MarkRegistered(context.Background(), s.repoURL)
 		if cleanupErr != nil {
 			err = fmt.Errorf("%w; additionally failed to reset repo registry state: %v", err, cleanupErr)
 		}
@@ -64,6 +65,6 @@ func (s *DeleteRepoService) DeleteRepo() (err error) {
 		return err
 	}
 
-	err = s.repoRegistryRepo.MarkDeleted(s.repoURL)
+	err = s.repoRegistryRepo.MarkDeleted(context.Background(), s.repoURL)
 	return err
 }

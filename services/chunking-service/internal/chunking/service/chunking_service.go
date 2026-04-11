@@ -1,16 +1,14 @@
 package service
 
 import (
-	"crypto/sha256"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
 	"path"
-	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/rohandave/tessa-rag/services/chunking-service/internal/chunking/ports"
@@ -22,6 +20,7 @@ import (
 type ChunkingServiceInput struct {
 	Logger               *log.Logger
 	BlobStoreRepo        *sharedblobstore.Repo
+	ChunkRepo            *ports.ChunkRepo
 	NormalizationService *NormalizationService
 	ExtractionService    *ExtractionService
 }
@@ -30,6 +29,7 @@ type ChunkingService struct {
 	logger               *log.Logger
 	normalizationService *NormalizationService
 	extractionService    *ExtractionService
+	chunkRepo            *ports.ChunkRepo
 	blobStoreRepo        *sharedblobstore.Repo
 }
 
@@ -38,17 +38,18 @@ func NewChunkingService(input *ChunkingServiceInput) *ChunkingService {
 		logger:               input.Logger,
 		blobStoreRepo:        input.BlobStoreRepo,
 		normalizationService: input.NormalizationService,
+		chunkRepo:            input.ChunkRepo,
 		extractionService:    input.ExtractionService,
 	}
 }
 
-func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) (map[string]string, error) {
+func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) error {
 	s.logf("starting chunking pipeline for snapshot=%s repo=%s changelog=%s", snapshot.Id, snapshot.RepoURL, snapshot.ChangeLogURL)
 
 	changeLogFile, err := s.blobStoreRepo.GetFile(snapshot.ChangeLogURL)
 	if err != nil {
 		s.logf("failed to fetch change log for snapshot=%s: %v", snapshot.Id, err)
-		return nil, err
+		return err
 	}
 	s.logf("loaded change log for snapshot=%s bytes=%d extension=%s", snapshot.Id, len(changeLogFile.Content), changeLogFile.Extension)
 
@@ -56,7 +57,7 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) (map[string]stri
 	err = json.Unmarshal(changeLogFile.Content, &changeLogFileContent)
 	if err != nil {
 		s.logf("failed to decode change log for snapshot=%s: %v", snapshot.Id, err)
-		return nil, err
+		return err
 	}
 	s.logf(
 		"decoded change log for snapshot=%s created=%d updated=%d deleted=%d",
@@ -69,12 +70,11 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) (map[string]stri
 	fetchedFilesChannel := make(chan *shareddomain.FileJob)
 	normalizedFilesChannel := make(chan *shareddomain.FileJob)
 	errCh := make(chan error, 1)
-	chunkLocations := make(map[string]string)
 
 	blobDirectoryURL, err := deriveDirectoryURL(snapshot.ChangeLogURL)
 	if err != nil {
 		s.logf("failed to derive blob directory from change log url for snapshot=%s: %v", snapshot.Id, err)
-		return nil, err
+		return err
 	}
 
 	normalizationWorkerCount := 5
@@ -83,8 +83,6 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) (map[string]stri
 
 	var normalizationWG sync.WaitGroup
 	var extractionWG sync.WaitGroup
-	var chunkLocationsMu sync.Mutex
-	var chunkCounter atomic.Uint64
 
 	for range normalizationWorkerCount {
 		normalizationWG.Add(1)
@@ -96,10 +94,6 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) (map[string]stri
 		go s.extractionWorker(
 			normalizedFilesChannel,
 			snapshot,
-			blobDirectoryURL,
-			&chunkCounter,
-			chunkLocations,
-			&chunkLocationsMu,
 			&extractionWG,
 			errCh,
 		)
@@ -119,7 +113,7 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) (map[string]stri
 		s.logf("failed while fetching files for snapshot=%s: %v", snapshot.Id, err)
 		close(fetchedFilesChannel)
 		close(normalizedFilesChannel)
-		return nil, err
+		return err
 	}
 
 	s.logf("completed blob fetch stage for snapshot=%s", snapshot.Id)
@@ -134,13 +128,13 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) (map[string]stri
 	case workerErr := <-errCh:
 		if workerErr != nil {
 			s.logf("worker error for snapshot=%s: %v", snapshot.Id, workerErr)
-			return nil, workerErr
+			return workerErr
 		}
 	default:
 	}
 
 	s.logf("finished chunking pipeline for snapshot=%s", snapshot.Id)
-	return chunkLocations, nil
+	return nil
 }
 
 func (s *ChunkingService) normalizationWorker(fetchedFilesChannel <-chan *shareddomain.FileJob, normalizedFilesChannel chan<- *shareddomain.FileJob, wg *sync.WaitGroup, errCh chan<- error) {
@@ -168,7 +162,7 @@ func (s *ChunkingService) normalizationWorker(fetchedFilesChannel <-chan *shared
 	}
 }
 
-func (s *ChunkingService) extractionWorker(normalizedFilesChannel <-chan *shareddomain.FileJob, snapshot shareddomain.Snapshot, blobDirectoryURL string, chunkCounter *atomic.Uint64, chunkLocations map[string]string, chunkLocationsMu *sync.Mutex, wg *sync.WaitGroup, errCh chan<- error) {
+func (s *ChunkingService) extractionWorker(normalizedFilesChannel <-chan *shareddomain.FileJob, snapshot shareddomain.Snapshot, wg *sync.WaitGroup, errCh chan<- error) {
 	defer wg.Done()
 
 	for fileJob := range normalizedFilesChannel {
@@ -190,46 +184,25 @@ func (s *ChunkingService) extractionWorker(normalizedFilesChannel <-chan *shared
 
 		s.logf("extraced data symbols=%d containers=%d imports=%d doc comments=%d classes=%d functions=%d methods=%d module level declarations=%d", len(extractedData.Symbols), len(extractedData.Containers), len(extractedData.Imports), len(extractedData.DocComments), len(extractedData.Classes), len(extractedData.Functions), len(extractedData.Methods), len(extractedData.ModuleLevelDeclarations))
 
-		chunks := buildChunks(snapshot, fileJob, extractedData, chunkCounter)
-		s.logf("built %d chunks for path=%s", len(chunks), fileJob.Path)
+		chunks := buildChunks(snapshot, fileJob, extractedData)
+		s.logf("built %d chunks for snapshot with id=%s", len(chunks), snapshot.Id)
 
 		for _, chunk := range chunks {
-			chunkJSON, err := json.Marshal(chunk)
+			err = s.chunkRepo.CreateChunk(context.Background(), &chunk)
 			if err != nil {
-				s.logf("failed to marshal chunk payload chunk_id=%s path=%s: %v", chunk.ChunkID, fileJob.Path, err)
-				select {
-				case errCh <- fmt.Errorf("marshal chunk payload %s: %w", chunk.ChunkID, err):
-				default:
-				}
-				continue
+				s.logf("failed to write chunk with id=%s to database: %v", chunk.ChunkID, err)
+
 			}
 
-			contentHash := hashContent(chunkJSON)
-			fileName := fmt.Sprintf("%s_chunk_%s.json", contentHash, chunk.ChunkID)
-			filePath := sharedutil.HashString(snapshot.RepoURL) + "/" + fileName
-
-			insertedURL, err := s.blobStoreRepo.InsertFile(filePath, chunkJSON, "json")
-			if err != nil {
-				s.logf("failed to write chunk chunk_id=%s path=%s: %v", chunk.ChunkID, filePath, err)
-				select {
-				case errCh <- fmt.Errorf("insert chunk %s: %w", chunk.ChunkID, err):
-				default:
-				}
-				continue
-			}
-
-			chunkLocationsMu.Lock()
-			chunkLocations[chunk.ChunkID] = insertedURL
-			chunkLocationsMu.Unlock()
-			s.logf("stored extracted chunk chunk_id=%s symbol=%s type=%s url=%s", chunk.ChunkID, chunk.SymbolName, chunk.SymbolType, insertedURL)
+			s.logf("stored extracted chunk chunk_id=%s symbol=%s type=%s", chunk.ChunkID, chunk.SymbolName, chunk.SymbolType)
 		}
 	}
 }
 
-func buildChunks(snapshot shareddomain.Snapshot, fileJob *shareddomain.FileJob, extractedData *ports.CodeParseResult, chunkCounter *atomic.Uint64) []shareddomain.Chunk {
+func buildChunks(snapshot shareddomain.Snapshot, fileJob *shareddomain.FileJob, extractedData *ports.CodeParseResult) []shareddomain.Chunk {
 	declarations := collectChunkDeclarations(extractedData)
 	if len(declarations) == 0 {
-		chunkID := strconv.FormatUint(chunkCounter.Add(1), 10)
+		chunkID := sharedutil.GenerateUUID()
 		return []shareddomain.Chunk{buildChunk(snapshot, fileJob, chunkID, ports.CodeDeclaration{
 			Name:      "",
 			Kind:      "",
@@ -241,7 +214,7 @@ func buildChunks(snapshot shareddomain.Snapshot, fileJob *shareddomain.FileJob, 
 
 	chunks := make([]shareddomain.Chunk, 0, len(declarations))
 	for _, declaration := range declarations {
-		chunkID := strconv.FormatUint(chunkCounter.Add(1), 10)
+		chunkID := sharedutil.GenerateUUID()
 		chunks = append(chunks, buildChunk(snapshot, fileJob, chunkID, declaration))
 	}
 
@@ -309,7 +282,7 @@ func buildChunk(snapshot shareddomain.Snapshot, fileJob *shareddomain.FileJob, c
 	chunk := shareddomain.Chunk{
 		ChunkID:      chunkID,
 		RepoURL:      snapshot.RepoURL,
-		FileHash:     hashContent([]byte(text)),
+		FileHash:     sharedutil.HashString(text),
 		FileName:     fileName,
 		Branch:       snapshot.Branch,
 		CommitSHA:    snapshot.CommitSHA,
@@ -411,54 +384,3 @@ func deriveDirectoryURL(fileURL string) (string, error) {
 	parsedURL.Path = dirPath
 	return parsedURL.String(), nil
 }
-
-func hashContent(content []byte) string {
-	sum := sha256.Sum256(content)
-	return fmt.Sprintf("%x", sum)
-}
-
-// func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) (map[string]string, error) {
-// 	changeLogUrls := snapshot.ChangeLogURL
-
-// 	changeLogFile, err := s.
-
-// 	for _, filePath := range changeLogUrls {
-// 		// For each file path, you can read the file content from the blob store or any other source
-// 		// This is a placeholder for reading the file content
-// 		fileContent := "" // Replace this with actual file content retrieval logic
-
-// 		// Process the file content through normalization, extraction, and chunking
-// 		chunkedData, err := s.processFileContent(fileContent, filePath)
-// 		if err != nil {
-// 			return nil, err
-// 		}
-
-// 		// You can store or return the chunked data as needed
-// 		_ = chunkedData // Replace this with your actual handling of chunked data
-// 	}
-
-// 	return nil, nil // Replace this with your actual return value as needed
-// }
-
-// func (s *ChunkingService) processFileContent(fileContent string, filePath string) (map[string]string, error) {
-
-// 	// Step 1: Normalize the file content
-// 	normalizedContent, err := s.normalizationService.NormalizeFileContent(fileContent)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-
-// 	// Step 2: Extract relevant information from the normalized content
-// 	extractedData, err := s.extractionService.ExtractFileContent(normalizedContent, filePath)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-
-// 	// Step 3: Chunk the extracted data as needed (this is a placeholder for your actual chunking logic)
-// 	chunkedData := make(map[string]string)
-// 	for key, value := range extractedData {
-// 		chunkedData[key] = value // Replace this with your actual chunking logic
-// 	}
-
-// 	return chunkedData, nil
-// }

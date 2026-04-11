@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,7 +70,7 @@ func NewRepoUpdateService(input *RepoUpdateServiceInput, repoRegistryRepo ports.
 
 func (s *RepoUpdateService) UpdateRepo() (snapshot *shareddomain.Snapshot, err error) {
 	// check if state is registered for this repo
-	updateAllowed, err := s.repoRegistryRepo.TryUpdateRepo(s.repoURL, s.branch)
+	updateAllowed, err := s.repoRegistryRepo.TryUpdateRepo(context.Background(), s.repoURL, s.branch)
 	if err != nil {
 		return nil, fmt.Errorf("try update repo for %q: %w", s.repoURL, err)
 	}
@@ -82,7 +83,7 @@ func (s *RepoUpdateService) UpdateRepo() (snapshot *shareddomain.Snapshot, err e
 			return
 		}
 
-		cleanupErr := s.repoRegistryRepo.MarkRegistered(s.repoURL)
+		cleanupErr := s.repoRegistryRepo.MarkRegistered(context.Background(), s.repoURL)
 		if cleanupErr != nil {
 			err = fmt.Errorf("%w; additionally failed to reset repo registry state: %v", err, cleanupErr)
 		}
@@ -219,7 +220,7 @@ func (s *RepoUpdateService) UpdateRepo() (snapshot *shareddomain.Snapshot, err e
 	snapshot.Id = snapshotId
 
 	// mark repo registry state as updated
-	err = s.repoRegistryRepo.MarkUpdated(s.repoURL, s.commitSHA)
+	err = s.repoRegistryRepo.MarkUpdated(context.Background(), s.repoURL, s.commitSHA)
 
 	return snapshot, err
 }

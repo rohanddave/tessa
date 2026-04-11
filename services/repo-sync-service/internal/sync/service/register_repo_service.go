@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -66,7 +67,7 @@ func NewRegisterRepoService(input *RegisterRepoServiceInput, dataSourceRepo port
 }
 
 func (s *RegisterRepoService) RegisterRepo() (snapshot *shareddomain.Snapshot, err error) {
-	started, err := s.repoRegistryRepo.TryStartRegistration(s.repoURL, s.branch, s.commitSHA)
+	started, err := s.repoRegistryRepo.TryStartRegistration(context.Background(), s.repoURL, s.branch, s.commitSHA)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +80,7 @@ func (s *RegisterRepoService) RegisterRepo() (snapshot *shareddomain.Snapshot, e
 			return
 		}
 
-		cleanupErr := s.repoRegistryRepo.MarkDeleted(s.repoURL)
+		cleanupErr := s.repoRegistryRepo.MarkDeleted(context.Background(), s.repoURL)
 		if cleanupErr != nil {
 			err = fmt.Errorf("%w; additionally failed to reset repo registry state: %v", err, cleanupErr)
 		}
@@ -157,7 +158,7 @@ func (s *RegisterRepoService) RegisterRepo() (snapshot *shareddomain.Snapshot, e
 	snapshot.Id = snapshotId
 
 	// mark repo registry state as registered
-	err = s.repoRegistryRepo.MarkRegistered(s.repoURL)
+	err = s.repoRegistryRepo.MarkRegistered(context.Background(), s.repoURL)
 
 	return snapshot, err
 }
