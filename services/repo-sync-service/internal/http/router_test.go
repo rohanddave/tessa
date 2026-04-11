@@ -7,13 +7,13 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	sharedkafka "github.com/rohandave/tessa-rag/services/shared/kafka"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/config"
-	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/kafka"
 )
 
 func TestRegisterRepoEventAccepted(t *testing.T) {
 	cfg := config.Load()
-	router := NewRouter(cfg, kafka.NewDummyProducer())
+	router := NewRouter(cfg, sharedkafka.NewDummyProducer())
 
 	body := map[string]string{
 		"repo_url":     "https://github.com/example/repo.git",
@@ -28,7 +28,7 @@ func TestRegisterRepoEventAccepted(t *testing.T) {
 		t.Fatalf("marshal payload: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/register-repo-event", bytes.NewReader(payload))
+	req := httptest.NewRequest(http.MethodPost, "/repo-event", bytes.NewReader(payload))
 	res := httptest.NewRecorder()
 
 	router.ServeHTTP(res, req)
@@ -40,7 +40,7 @@ func TestRegisterRepoEventAccepted(t *testing.T) {
 
 func TestRegisterRepoEventValidation(t *testing.T) {
 	cfg := config.Load()
-	router := NewRouter(cfg, kafka.NewDummyProducer())
+	router := NewRouter(cfg, sharedkafka.NewDummyProducer())
 
 	body := map[string]string{
 		"repo_url":     "",
@@ -54,7 +54,7 @@ func TestRegisterRepoEventValidation(t *testing.T) {
 		t.Fatalf("marshal payload: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/register-repo-event", bytes.NewReader(payload))
+	req := httptest.NewRequest(http.MethodPost, "/repo-event", bytes.NewReader(payload))
 	res := httptest.NewRecorder()
 
 	router.ServeHTTP(res, req)

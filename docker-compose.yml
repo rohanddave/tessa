@@ -16,10 +16,29 @@ x-repo-sync-service-environment: &repo-sync-service-environment
   S3_SECRET_ACCESS_KEY: minioadmin
   S3_USE_SSL: "false"
 
+x-chunking-service-environment: &chunking-service-environment
+  SERVICE_NAME: chunking-service
+  KAFKA_BROKERS: kafka:9092
+  KAFKA_SNAPSHOTS_TOPIC: snapshot.created
+  KAFKA_INDEXING_TOPIC: chunking.chunk-indexing-events
+  SNAPSHOT_STORE_HOST: snapshot-store
+  SNAPSHOT_STORE_PORT: "5432"
+  SNAPSHOT_STORE_DB: snapshot_store
+  SNAPSHOT_STORE_USER: postgres
+  SNAPSHOT_STORE_PASSWORD: postgres
+  SNAPSHOT_STORE_SSLMODE: disable
+  S3_ENDPOINT: minio:9000
+  S3_REGION: us-east-1
+  S3_BUCKET: repo-sync
+  S3_ACCESS_KEY_ID: minioadmin
+  S3_SECRET_ACCESS_KEY: minioadmin
+  S3_USE_SSL: "false"
+
 x-repo-sync-service-common: &repo-sync-service-common
   image: repo-sync-service:local
   build:
-    context: ./services/repo-sync-service
+    context: ./services
+    dockerfile: repo-sync-service/Dockerfile
   depends_on:
     kafka:
       condition: service_healthy
@@ -28,6 +47,24 @@ x-repo-sync-service-common: &repo-sync-service-common
     minio-init:
       condition: service_completed_successfully
   environment: *repo-sync-service-environment
+  networks:
+    - tessa-net
+
+x-chunking-service-common: &chunking-service-common
+  image: chunking-service:local
+  build:
+    context: ./services
+    dockerfile: chunking-service/Dockerfile
+  depends_on:
+    kafka:
+      condition: service_healthy
+    minio:
+      condition: service_started
+    minio-init:
+      condition: service_completed_successfully
+    snapshot-store:
+      condition: service_healthy
+  environment: *chunking-service-environment
   networks:
     - tessa-net
 
@@ -145,6 +182,14 @@ services:
     <<: *repo-sync-service-common
     container_name: repo-sync-service-consumer
     command: ["repo-sync-service-consumer"]
+
+  chunking-service:
+    <<: *chunking-service-common
+    container_name: chunking-service
+    command: ["chunking-service-consumer"]
+    environment:
+      <<: *chunking-service-environment
+      SERVICE_NAME: chunking-service
 
 networks:
   tessa-net:

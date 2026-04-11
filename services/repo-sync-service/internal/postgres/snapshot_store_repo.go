@@ -8,16 +8,16 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/config"
-	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/domain"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
+	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
+	sharedpostgres "github.com/rohandave/tessa-rag/services/shared/postgres"
 )
 
 type SnapshotStoreRepo struct {
 	pool *pgxpool.Pool
 }
 
-func NewSnapshotStoreRepo(ctx context.Context, cfg config.DatabaseConfig) (ports.SnapshotStoreRepo, error) {
+func NewSnapshotStoreRepo(ctx context.Context, cfg *sharedpostgres.DatabaseConfig) (ports.SnapshotStoreRepo, error) {
 	dsn := fmt.Sprintf(
 		"postgresql://%s:%s@%s:%s/%s?sslmode=%s",
 		cfg.User,
@@ -45,7 +45,7 @@ func NewSnapshotStoreRepo(ctx context.Context, cfg config.DatabaseConfig) (ports
 	return repo, nil
 }
 
-func (r *SnapshotStoreRepo) CreateSnapshot(snapshot *domain.Snapshot) (string, error) {
+func (r *SnapshotStoreRepo) CreateSnapshot(snapshot *shareddomain.Snapshot) (string, error) {
 	id := snapshot.Id
 	if id == "" {
 		id = uuid.NewString()
@@ -71,8 +71,8 @@ func (r *SnapshotStoreRepo) CreateSnapshot(snapshot *domain.Snapshot) (string, e
 	return id, nil
 }
 
-func (r *SnapshotStoreRepo) GetSnapshot(snapshotID string) (*domain.Snapshot, error) {
-	var snapshot domain.Snapshot
+func (r *SnapshotStoreRepo) GetSnapshot(snapshotID string) (*shareddomain.Snapshot, error) {
+	var snapshot shareddomain.Snapshot
 
 	err := r.pool.QueryRow(
 		context.Background(),
@@ -101,8 +101,8 @@ func (r *SnapshotStoreRepo) GetSnapshot(snapshotID string) (*domain.Snapshot, er
 	return &snapshot, nil
 }
 
-func (r *SnapshotStoreRepo) GetLatestSnapshot(repoURL string) (*domain.Snapshot, error) {
-	var snapshot domain.Snapshot
+func (r *SnapshotStoreRepo) GetLatestSnapshot(repoURL string) (*shareddomain.Snapshot, error) {
+	var snapshot shareddomain.Snapshot
 
 	err := r.pool.QueryRow(
 		context.Background(),
@@ -171,17 +171,6 @@ func (r *SnapshotStoreRepo) ensureSchema(ctx context.Context) error {
 	)
 	if err != nil {
 		return fmt.Errorf("ensure snapshots schema: %w", err)
-	}
-
-	_, err = r.pool.Exec(
-		ctx,
-		`
-		ALTER TABLE snapshots
-		ADD COLUMN IF NOT EXISTS change_log_url TEXT NOT NULL DEFAULT ''
-		`,
-	)
-	if err != nil {
-		return fmt.Errorf("ensure snapshots change_log_url column: %w", err)
 	}
 
 	return nil

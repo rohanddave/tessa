@@ -5,15 +5,15 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/config"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
+	sharedpostgres "github.com/rohandave/tessa-rag/services/shared/postgres"
 )
 
 type RepoRegistryRepo struct {
 	pool *pgxpool.Pool
 }
 
-func NewRepoRegistryRepo(ctx context.Context, cfg config.DatabaseConfig) (ports.RepoRegistryRepo, error) {
+func NewRepoRegistryRepo(ctx context.Context, cfg *sharedpostgres.DatabaseConfig) (ports.RepoRegistryRepo, error) {
 	dsn := fmt.Sprintf(
 		"postgresql://%s:%s@%s:%s/%s?sslmode=%s",
 		cfg.User,
@@ -41,9 +41,9 @@ func NewRepoRegistryRepo(ctx context.Context, cfg config.DatabaseConfig) (ports.
 	return repo, nil
 }
 
-func (r *RepoRegistryRepo) TryStartRegistration(repoURL string, branch string, commitSHA string) (bool, error) {
+func (r *RepoRegistryRepo) TryStartRegistration(ctx context.Context, repoURL string, branch string, commitSHA string) (bool, error) {
 	commandTag, err := r.pool.Exec(
-		context.Background(),
+		ctx,
 		`
 		INSERT INTO repo_states (repo_url, branch, commit_sha, state)
 		VALUES ($1, $2, $3, 'registering')
@@ -62,9 +62,9 @@ func (r *RepoRegistryRepo) TryStartRegistration(repoURL string, branch string, c
 	return commandTag.RowsAffected() > 0, nil
 }
 
-func (r *RepoRegistryRepo) MarkRegistered(repoURL string) error {
+func (r *RepoRegistryRepo) MarkRegistered(ctx context.Context, repoURL string) error {
 	_, err := r.pool.Exec(
-		context.Background(),
+		ctx,
 		`
 		UPDATE repo_states
 		SET state = 'registered'
@@ -79,9 +79,9 @@ func (r *RepoRegistryRepo) MarkRegistered(repoURL string) error {
 	return nil
 }
 
-func (r *RepoRegistryRepo) TryStartDeletion(repoURL string) (bool, error) {
+func (r *RepoRegistryRepo) TryStartDeletion(ctx context.Context, repoURL string) (bool, error) {
 	commandTag, err := r.pool.Exec(
-		context.Background(),
+		ctx,
 		`
 		UPDATE repo_states
 		SET state = 'deleting'
@@ -96,9 +96,9 @@ func (r *RepoRegistryRepo) TryStartDeletion(repoURL string) (bool, error) {
 	return commandTag.RowsAffected() > 0, nil
 }
 
-func (r *RepoRegistryRepo) MarkDeleted(repoURL string) error {
+func (r *RepoRegistryRepo) MarkDeleted(ctx context.Context, repoURL string) error {
 	_, err := r.pool.Exec(
-		context.Background(),
+		ctx,
 		`
 		UPDATE repo_states
 		SET state = 'deleted'
@@ -112,9 +112,9 @@ func (r *RepoRegistryRepo) MarkDeleted(repoURL string) error {
 	return nil
 }
 
-func (r *RepoRegistryRepo) TryUpdateRepo(repoURL string, branch string) (bool, error) {
+func (r *RepoRegistryRepo) TryUpdateRepo(ctx context.Context, repoURL string, branch string) (bool, error) {
 	commandTag, err := r.pool.Exec(
-		context.Background(),
+		ctx,
 		`
 		UPDATE repo_states
 		SET state = 'updating'
@@ -130,9 +130,9 @@ func (r *RepoRegistryRepo) TryUpdateRepo(repoURL string, branch string) (bool, e
 	return commandTag.RowsAffected() > 0, nil
 }
 
-func (r *RepoRegistryRepo) MarkUpdated(repoURL string, commitSHA string) error {
+func (r *RepoRegistryRepo) MarkUpdated(ctx context.Context, repoURL string, commitSHA string) error {
 	_, err := r.pool.Exec(
-		context.Background(),
+		ctx,
 		`
 		UPDATE repo_states
 		SET state = 'registered', commit_sha = $2

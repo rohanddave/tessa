@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
@@ -178,9 +179,10 @@ func (s *repoFileStream) Next() (*ports.RepoFile, error) {
 		}
 
 		return &ports.RepoFile{
-			Path:   path,
-			Size:   header.Size,
-			Reader: io.NopCloser(io.LimitReader(s.tarReader, header.Size)),
+			Path:      path,
+			Extension: normalizeFileExtension(path),
+			Size:      header.Size,
+			Reader:    io.NopCloser(io.LimitReader(s.tarReader, header.Size)),
 		}, nil
 	}
 }
@@ -249,4 +251,13 @@ func normalizeArchivePath(name string) (string, string, error) {
 	}
 
 	return path, commitSHA, nil
+}
+
+func normalizeFileExtension(filePath string) string {
+	extension := strings.TrimSpace(path.Ext(filePath))
+	if extension == "" {
+		return ""
+	}
+
+	return strings.TrimPrefix(extension, ".")
 }

@@ -9,9 +9,9 @@ import (
 	"syscall"
 	"time"
 
+	sharedkafka "github.com/rohandave/tessa-rag/services/shared/kafka"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/config"
 	httpapi "github.com/rohandave/tessa-rag/services/repo-sync-service/internal/http"
-	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/kafka"
 )
 
 func main() {
@@ -28,11 +28,12 @@ func main() {
 		cfg.Storage.Endpoint,
 	)
 
-	producerCfg := &kafka.KafkaProducerConfig{
-		Brokers: cfg.Kafka.Brokers,
+	producer, err := sharedkafka.NewProducer()
+	if err != nil {
+		logger.Fatalf("failed to create kafka producer: %v", err)
 	}
+	defer producer.Close()
 
-	producer := kafka.NewKafkaProducer(producerCfg)
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           httpapi.NewRouter(cfg, producer),

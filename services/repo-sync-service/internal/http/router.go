@@ -7,17 +7,17 @@ import (
 	"strings"
 	"time"
 
+	sharedkafka "github.com/rohandave/tessa-rag/services/shared/kafka"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/config"
-	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/kafka"
 	reposync "github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync"
 )
 
 type handler struct {
 	config   config.Config
-	producer kafka.Producer
+	producer sharedkafka.Producer
 }
 
-func NewRouter(cfg config.Config, producer kafka.Producer) http.Handler {
+func NewRouter(cfg config.Config, producer sharedkafka.Producer) http.Handler {
 	h := handler{
 		config:   cfg,
 		producer: producer,
@@ -90,7 +90,15 @@ func (h handler) handleRepoEvent(w http.ResponseWriter, r *http.Request) {
 		ReceivedAt:  time.Now().UTC(),
 	}
 
-	if err := h.producer.Produce(&event); err != nil {
+	value, err := json.Marshal(event)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "failed to encode repo event",
+		})
+		return
+	}
+
+	if err := h.producer.Produce(h.config.Kafka.EventsTopic, []byte(event.RepoURL), value); err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{
 			"error": "failed to publish repo event",
 		})

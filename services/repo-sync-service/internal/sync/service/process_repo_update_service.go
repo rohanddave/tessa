@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,7 +10,8 @@ import (
 
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/domain"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
-	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/util"
+	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
+	sharedutil "github.com/rohandave/tessa-rag/services/shared/util"
 )
 
 type RepoUpdateServiceInput struct {
@@ -33,7 +35,7 @@ type RepoUpdateService struct {
 	manifestMu sync.Mutex
 	manifest   domain.Manifest
 	seenPaths  map[string]struct{}
-	changeLog  domain.ChangeLog
+	changeLog  shareddomain.ChangeLog
 }
 
 func NewRepoUpdateService(input *RepoUpdateServiceInput, repoRegistryRepo ports.RepoRegistryRepo, dataSourceRepo ports.DataSourceRepo, blobStoreRepo ports.BlobStoreRepo, snapshotStoreRepo ports.SnapshotStoreRepo) *RepoUpdateService {
@@ -45,7 +47,7 @@ func NewRepoUpdateService(input *RepoUpdateServiceInput, repoRegistryRepo ports.
 		repoURL:                input.RepoURL,
 		branch:                 input.Branch,
 		commitSHA:              input.CommitSHA,
-		blobStorageDestination: util.HashString(input.RepoURL),
+		blobStorageDestination: sharedutil.HashString(input.RepoURL),
 
 		seenPaths: make(map[string]struct{}),
 		manifest: domain.Manifest{
@@ -55,25 +57,25 @@ func NewRepoUpdateService(input *RepoUpdateServiceInput, repoRegistryRepo ports.
 			CommitSHA: input.CommitSHA,
 			Files:     map[string]domain.ManifestFile{},
 		},
-		changeLog: domain.ChangeLog{
+		changeLog: shareddomain.ChangeLog{
 			RepoURL:   input.RepoURL,
 			Branch:    input.Branch,
 			CommitSHA: input.CommitSHA,
-			Created:   []domain.ChangeLogFile{},
-			Updated:   []domain.UpdatedChangeLogFile{},
-			Deleted:   []domain.ChangeLogFile{},
+			Created:   []shareddomain.ChangeLogFile{},
+			Updated:   []shareddomain.UpdatedChangeLogFile{},
+			Deleted:   []shareddomain.ChangeLogFile{},
 		},
 	}
 }
 
-func (s *RepoUpdateService) UpdateRepo() (err error) {
+func (s *RepoUpdateService) UpdateRepo() (snapshot *shareddomain.Snapshot, err error) {
 	// check if state is registered for this repo
-	updateAllowed, err := s.repoRegistryRepo.TryUpdateRepo(s.repoURL, s.branch)
+	updateAllowed, err := s.repoRegistryRepo.TryUpdateRepo(context.Background(), s.repoURL, s.branch)
 	if err != nil {
-		return fmt.Errorf("try update repo for %q: %w", s.repoURL, err)
+		return nil, fmt.Errorf("try update repo for %q: %w", s.repoURL, err)
 	}
 	if !updateAllowed {
-		return fmt.Errorf("cannot update repo for %q: not in registered state", s.repoURL)
+		return nil, fmt.Errorf("cannot update repo for %q: not in registered state", s.repoURL)
 	}
 
 	defer func() {
@@ -81,7 +83,7 @@ func (s *RepoUpdateService) UpdateRepo() (err error) {
 			return
 		}
 
-		cleanupErr := s.repoRegistryRepo.MarkRegistered(s.repoURL)
+		cleanupErr := s.repoRegistryRepo.MarkRegistered(context.Background(), s.repoURL)
 		if cleanupErr != nil {
 			err = fmt.Errorf("%w; additionally failed to reset repo registry state: %v", err, cleanupErr)
 		}
@@ -89,26 +91,26 @@ func (s *RepoUpdateService) UpdateRepo() (err error) {
 
 	prevSnapshot, err := s.snapshotStoreRepo.GetLatestSnapshot(s.repoURL)
 	if err != nil {
-		return fmt.Errorf("get latest snapshot for %q: %w", s.repoURL, err)
+		return nil, fmt.Errorf("get latest snapshot for %q: %w", s.repoURL, err)
 	}
 
 	if prevSnapshot == nil {
-		return fmt.Errorf("no previous snapshot found for repo %q, cannot perform update", s.repoURL)
+		return nil, fmt.Errorf("no previous snapshot found for repo %q, cannot perform update", s.repoURL)
 	}
 
 	if prevSnapshot.CommitSHA == s.commitSHA {
 		// no update needed
-		return nil
+		return nil, nil
 	}
 
-	prevManifestBytes, err := s.blobStoreRepo.GetFile(prevSnapshot.ManifestURL)
+	prevManifestFile, err := s.blobStoreRepo.GetFile(prevSnapshot.ManifestURL)
 	if err != nil {
-		return fmt.Errorf("get manifest from blob store for %q: %w", s.repoURL, err)
+		return nil, fmt.Errorf("get manifest from blob store for %q: %w", s.repoURL, err)
 	}
 
 	var prevManifest domain.Manifest
-	if err := json.Unmarshal(prevManifestBytes, &prevManifest); err != nil {
-		return fmt.Errorf("unmarshal previous manifest for %q: %w", s.repoURL, err)
+	if err := json.Unmarshal(prevManifestFile.Content, &prevManifest); err != nil {
+		return nil, fmt.Errorf("unmarshal previous manifest for %q: %w", s.repoURL, err)
 	}
 
 	s.seenPaths = make(map[string]struct{}, len(prevManifest.Files))
@@ -120,21 +122,21 @@ func (s *RepoUpdateService) UpdateRepo() (err error) {
 		CommitSHA: s.commitSHA,
 		Files:     make(map[string]domain.ManifestFile, len(prevManifest.Files)),
 	}
-	s.changeLog = domain.ChangeLog{
+	s.changeLog = shareddomain.ChangeLog{
 		RepoURL:           s.repoURL,
 		Branch:            s.branch,
 		CommitSHA:         s.commitSHA,
 		PreviousCommitSHA: prevSnapshot.CommitSHA,
-		Created:           []domain.ChangeLogFile{},
-		Updated:           []domain.UpdatedChangeLogFile{},
-		Deleted:           []domain.ChangeLogFile{},
+		Created:           []shareddomain.ChangeLogFile{},
+		Updated:           []shareddomain.UpdatedChangeLogFile{},
+		Deleted:           []shareddomain.ChangeLogFile{},
 	}
 
 	for path, file := range prevManifest.Files {
 		s.manifest.Files[path] = file
 	}
 
-	fileJobs := make(chan FileJob)
+	fileJobs := make(chan shareddomain.FileJob)
 	workerErrors := make(chan error, 5)
 
 	var wg sync.WaitGroup
@@ -156,22 +158,23 @@ func (s *RepoUpdateService) UpdateRepo() (err error) {
 
 	if streamErr != nil {
 		err = streamErr
-		return err
+		return nil, err
 	}
 
 	for workerErr := range workerErrors {
 		if workerErr != nil {
 			err = workerErr
-			return err
+			return nil, err
 		}
 	}
 
 	for path, file := range s.manifest.Files {
 		if _, seen := s.seenPaths[path]; !seen {
-			s.changeLog.Deleted = append(s.changeLog.Deleted, domain.ChangeLogFile{
-				Path:     path,
-				FileHash: file.FileHash,
-				FileSize: file.FileSize,
+			s.changeLog.Deleted = append(s.changeLog.Deleted, shareddomain.ChangeLogFile{
+				Path:          path,
+				FileHash:      file.FileHash,
+				FileSize:      file.FileSize,
+				FileExtension: file.FileExtension,
 			})
 			delete(s.manifest.Files, path)
 		}
@@ -179,44 +182,50 @@ func (s *RepoUpdateService) UpdateRepo() (err error) {
 
 	manifestBytes, err := json.Marshal(s.manifest)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	changeLogBytes, err := json.Marshal(s.changeLog)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	manifestFileName := util.HashString(s.repoURL+s.branch+s.commitSHA) + "_manifest.json"
-	changeLogFileName := util.HashString(s.repoURL+s.branch+s.commitSHA) + "_change_log.json"
+	manifestFileName := sharedutil.HashString(s.repoURL+s.branch+s.commitSHA) + "_manifest.json"
+	changeLogFileName := sharedutil.HashString(s.repoURL+s.branch+s.commitSHA) + "_change_log.json"
 
 	// create a manifest file and insert into blob store
-	manifestURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+manifestFileName, manifestBytes)
+	manifestURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+manifestFileName, manifestBytes, "json")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	changeLogURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+changeLogFileName, changeLogBytes)
+	changeLogURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+changeLogFileName, changeLogBytes, "json")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// create snapshot in snapshot store with urls of the manifest and raw files in blob store
-	_, err = s.snapshotStoreRepo.CreateSnapshot(&domain.Snapshot{
+	snapshot = &shareddomain.Snapshot{
 		RepoURL:      s.repoURL,
 		Branch:       s.branch,
 		CommitSHA:    s.commitSHA,
 		ManifestURL:  manifestURL,
 		ChangeLogURL: changeLogURL,
-	})
-
-	if err != nil {
-		return err
 	}
 
-	err = s.repoRegistryRepo.MarkUpdated(s.repoURL, s.commitSHA)
-	return err
+	snapshotId, err := s.snapshotStoreRepo.CreateSnapshot(snapshot)
+
+	if err != nil {
+		return nil, err
+	}
+
+	snapshot.Id = snapshotId
+
+	// mark repo registry state as updated
+	err = s.repoRegistryRepo.MarkUpdated(context.Background(), s.repoURL, s.commitSHA)
+
+	return snapshot, err
 }
 
-func (s *RepoUpdateService) streamRepoFiles(jobs chan<- FileJob) error {
+func (s *RepoUpdateService) streamRepoFiles(jobs chan<- shareddomain.FileJob) error {
 	// open repo archive stream from data source
 	fileStream, err := s.dataSourceRepo.OpenRepoArchive(ports.OpenRepoFileStreamInput{
 		RepoURL:   s.repoURL,
@@ -244,27 +253,29 @@ func (s *RepoUpdateService) streamRepoFiles(jobs chan<- FileJob) error {
 			return err
 		}
 
-		jobs <- FileJob{
-			Path:    repoFile.Path,
-			Size:    repoFile.Size,
-			Content: content,
+		jobs <- shareddomain.FileJob{
+			Path:      repoFile.Path,
+			Size:      repoFile.Size,
+			Content:   content,
+			Extension: repoFile.Extension,
 		}
 	}
 
 	return nil
 }
 
-func (s *RepoUpdateService) processFileJobsAndAttachToManifest(jobs <-chan FileJob) error {
+func (s *RepoUpdateService) processFileJobsAndAttachToManifest(jobs <-chan shareddomain.FileJob) error {
 	for job := range jobs {
 		// insert file content into blob store and get the url
-		contentHash := util.HashContent(job.Content)
+		contentHash := sharedutil.HashContent(job.Content)
 
 		s.manifestMu.Lock()
 		s.seenPaths[job.Path] = struct{}{}
 		prevFile, exists := s.manifest.Files[job.Path]
 		newFile := domain.ManifestFile{
-			FileHash: contentHash,
-			FileSize: job.Size,
+			FileHash:      contentHash,
+			FileSize:      job.Size,
+			FileExtension: job.Extension,
 		}
 
 		if exists && prevFile.FileHash == contentHash {
@@ -275,18 +286,20 @@ func (s *RepoUpdateService) processFileJobsAndAttachToManifest(jobs <-chan FileJ
 		}
 
 		if exists {
-			s.changeLog.Updated = append(s.changeLog.Updated, domain.UpdatedChangeLogFile{
-				Path:        job.Path,
-				OldFileHash: prevFile.FileHash,
-				OldFileSize: prevFile.FileSize,
-				NewFileHash: newFile.FileHash,
-				NewFileSize: newFile.FileSize,
+			s.changeLog.Updated = append(s.changeLog.Updated, shareddomain.UpdatedChangeLogFile{
+				Path:          job.Path,
+				OldFileHash:   prevFile.FileHash,
+				OldFileSize:   prevFile.FileSize,
+				NewFileHash:   newFile.FileHash,
+				NewFileSize:   newFile.FileSize,
+				FileExtension: newFile.FileExtension,
 			})
 		} else {
-			s.changeLog.Created = append(s.changeLog.Created, domain.ChangeLogFile{
-				Path:     job.Path,
-				FileHash: newFile.FileHash,
-				FileSize: newFile.FileSize,
+			s.changeLog.Created = append(s.changeLog.Created, shareddomain.ChangeLogFile{
+				Path:          job.Path,
+				FileHash:      newFile.FileHash,
+				FileSize:      newFile.FileSize,
+				FileExtension: newFile.FileExtension,
 			})
 		}
 
@@ -294,7 +307,7 @@ func (s *RepoUpdateService) processFileJobsAndAttachToManifest(jobs <-chan FileJ
 		s.manifest.Files[job.Path] = newFile
 		s.manifestMu.Unlock()
 
-		_, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+contentHash, job.Content)
+		_, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+contentHash, job.Content, job.Extension)
 		if err != nil {
 			return err
 		}

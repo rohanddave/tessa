@@ -20,7 +20,8 @@ type RepoFileStream interface {
 }
 
 type RepoFile struct {
-	Path   string
-	Size   int64
-	Reader io.ReadCloser
+	Path      string
+	Extension string
+	Size      int64
+	Reader    io.ReadCloser
 }

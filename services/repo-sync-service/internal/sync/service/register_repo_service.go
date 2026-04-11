@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,14 +10,9 @@ import (
 
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/domain"
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
-	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/util"
+	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
+	sharedutil "github.com/rohandave/tessa-rag/services/shared/util"
 )
-
-type FileJob struct {
-	Path    string
-	Size    int64
-	Content []byte
-}
 
 type RegisterRepoServiceInput struct {
 	RepoURL   string
@@ -38,6 +34,7 @@ type RegisterRepoService struct {
 
 	manifestMu sync.Mutex
 	manifest   domain.Manifest
+	changeLog  shareddomain.ChangeLog
 }
 
 func NewRegisterRepoService(input *RegisterRepoServiceInput, dataSourceRepo ports.DataSourceRepo, snapshotStoreRepo ports.SnapshotStoreRepo, blobStoreRepo ports.BlobStoreRepo, repoRegistryRepo ports.RepoRegistryRepo) *RegisterRepoService {
@@ -49,7 +46,7 @@ func NewRegisterRepoService(input *RegisterRepoServiceInput, dataSourceRepo port
 		repoURL:                input.RepoURL,
 		branch:                 input.Branch,
 		commitSHA:              input.CommitSHA,
-		blobStorageDestination: util.HashString(input.RepoURL),
+		blobStorageDestination: sharedutil.HashString(input.RepoURL),
 		manifest: domain.Manifest{
 			Id:        "",
 			RepoURL:   input.RepoURL,
@@ -57,16 +54,25 @@ func NewRegisterRepoService(input *RegisterRepoServiceInput, dataSourceRepo port
 			CommitSHA: input.CommitSHA,
 			Files:     map[string]domain.ManifestFile{},
 		},
+		changeLog: shareddomain.ChangeLog{
+			RepoURL:           input.RepoURL,
+			Branch:            input.Branch,
+			CommitSHA:         input.CommitSHA,
+			PreviousCommitSHA: "",
+			Created:           []shareddomain.ChangeLogFile{},
+			Updated:           []shareddomain.UpdatedChangeLogFile{},
+			Deleted:           []shareddomain.ChangeLogFile{},
+		},
 	}
 }
 
-func (s *RegisterRepoService) RegisterRepo() (err error) {
-	started, err := s.repoRegistryRepo.TryStartRegistration(s.repoURL, s.branch, s.commitSHA)
+func (s *RegisterRepoService) RegisterRepo() (snapshot *shareddomain.Snapshot, err error) {
+	started, err := s.repoRegistryRepo.TryStartRegistration(context.Background(), s.repoURL, s.branch, s.commitSHA)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !started {
-		return fmt.Errorf("repo registration already in progress or repo is not eligible for registration: %s", s.repoURL)
+		return nil, fmt.Errorf("repo registration already in progress or repo is not eligible for registration: %s", s.repoURL)
 	}
 
 	defer func() {
@@ -74,13 +80,13 @@ func (s *RegisterRepoService) RegisterRepo() (err error) {
 			return
 		}
 
-		cleanupErr := s.repoRegistryRepo.MarkDeleted(s.repoURL)
+		cleanupErr := s.repoRegistryRepo.MarkDeleted(context.Background(), s.repoURL)
 		if cleanupErr != nil {
 			err = fmt.Errorf("%w; additionally failed to reset repo registry state: %v", err, cleanupErr)
 		}
 	}()
 
-	fileJobs := make(chan FileJob)
+	fileJobs := make(chan shareddomain.FileJob)
 	workerErrors := make(chan error, 5)
 
 	var wg sync.WaitGroup
@@ -102,47 +108,62 @@ func (s *RegisterRepoService) RegisterRepo() (err error) {
 
 	if streamErr != nil {
 		err = streamErr
-		return err
+		return nil, err
 	}
 
 	for workerErr := range workerErrors {
 		if workerErr != nil {
 			err = workerErr
-			return err
+			return nil, err
 		}
 	}
 
 	manifestBytes, err := json.Marshal(s.manifest)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	changeLogBytes, err := json.Marshal(s.buildInitialChangeLog())
+	if err != nil {
+		return nil, err
 	}
 
-	manifestFileName := util.HashString(s.repoURL+s.branch+s.commitSHA) + "_manifest.json"
+	manifestFileName := sharedutil.HashString(s.repoURL+s.branch+s.commitSHA) + "_manifest.json"
+	changeLogFileName := sharedutil.HashString(s.repoURL+s.branch+s.commitSHA) + "_change_log.json"
 
 	// create a manifest file and insert into blob store
-	manifestURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+manifestFileName, manifestBytes)
+	manifestURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+manifestFileName, manifestBytes, "json")
 	if err != nil {
-		return err
+		return nil, err
+	}
+	changeLogURL, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+changeLogFileName, changeLogBytes, "json")
+	if err != nil {
+		return nil, err
 	}
 
 	// create snapshot in snapshot store with urls of the manifest and raw files in blob store
-	_, err = s.snapshotStoreRepo.CreateSnapshot(&domain.Snapshot{
+	snapshot = &shareddomain.Snapshot{
 		RepoURL:      s.repoURL,
 		Branch:       s.branch,
 		CommitSHA:    s.commitSHA,
 		ManifestURL:  manifestURL,
-		ChangeLogURL: "",
-	})
-
-	if err != nil {
-		return err
+		ChangeLogURL: changeLogURL,
 	}
 
-	err = s.repoRegistryRepo.MarkRegistered(s.repoURL)
-	return err
+	snapshotId, err := s.snapshotStoreRepo.CreateSnapshot(snapshot)
+
+	if err != nil {
+		return nil, err
+	}
+
+	snapshot.Id = snapshotId
+
+	// mark repo registry state as registered
+	err = s.repoRegistryRepo.MarkRegistered(context.Background(), s.repoURL)
+
+	return snapshot, err
 }
 
-func (s *RegisterRepoService) streamRepoFiles(jobs chan<- FileJob) error {
+func (s *RegisterRepoService) streamRepoFiles(jobs chan<- shareddomain.FileJob) error {
 	// open repo archive stream from data source
 	fileStream, err := s.dataSourceRepo.OpenRepoArchive(ports.OpenRepoFileStreamInput{
 		RepoURL:   s.repoURL,
@@ -170,31 +191,51 @@ func (s *RegisterRepoService) streamRepoFiles(jobs chan<- FileJob) error {
 			return err
 		}
 
-		jobs <- FileJob{
-			Path:    repoFile.Path,
-			Size:    repoFile.Size,
-			Content: content,
+		jobs <- shareddomain.FileJob{
+			Path:      repoFile.Path,
+			Size:      repoFile.Size,
+			Content:   content,
+			Extension: repoFile.Extension,
 		}
 	}
 
 	return nil
 }
 
-func (s *RegisterRepoService) processFileJobsAndAttachToManifest(jobs <-chan FileJob) error {
+func (s *RegisterRepoService) processFileJobsAndAttachToManifest(jobs <-chan shareddomain.FileJob) error {
 	for job := range jobs {
 		// insert file content into blob store and get the url
-		contentHash := util.HashContent(job.Content)
-		_, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+contentHash, job.Content)
+		contentHash := sharedutil.HashContent(job.Content)
+		_, err := s.blobStoreRepo.InsertFile(s.blobStorageDestination+"/"+contentHash, job.Content, job.Extension)
 		if err != nil {
 			return err
 		}
 
 		s.manifestMu.Lock()
 		s.manifest.Files[job.Path] = domain.ManifestFile{
-			FileHash: contentHash,
-			FileSize: job.Size,
+			FileHash:      contentHash,
+			FileSize:      job.Size,
+			FileExtension: job.Extension,
 		}
 		s.manifestMu.Unlock()
 	}
 	return nil
+}
+
+func (s *RegisterRepoService) buildInitialChangeLog() shareddomain.ChangeLog {
+	s.manifestMu.Lock()
+	defer s.manifestMu.Unlock()
+
+	created := make([]shareddomain.ChangeLogFile, 0, len(s.manifest.Files))
+	for path, file := range s.manifest.Files {
+		created = append(created, shareddomain.ChangeLogFile{
+			Path:          path,
+			FileHash:      file.FileHash,
+			FileSize:      file.FileSize,
+			FileExtension: file.FileExtension,
+		})
+	}
+
+	s.changeLog.Created = created
+	return s.changeLog
 }

@@ -1,15 +1,15 @@
 package ports
 
 import (
-	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/domain"
+	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
 )
 
 type SnapshotStoreRepo interface {
-	CreateSnapshot(snapshot *domain.Snapshot) (string, error) // returns the id of the created snapshot
+	CreateSnapshot(snapshot *shareddomain.Snapshot) (string, error) // returns the id of the created snapshot
 
-	GetSnapshot(snapshotId string) (*domain.Snapshot, error)
+	GetSnapshot(snapshotId string) (*shareddomain.Snapshot, error)
 
-	GetLatestSnapshot(repoURL string) (*domain.Snapshot, error)
+	GetLatestSnapshot(repoURL string) (*shareddomain.Snapshot, error)
 
 	DeleteSnapshotsByRepoURL(repoURL string) error
 }

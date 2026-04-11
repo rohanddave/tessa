@@ -1,10 +1,11 @@
 package service
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/sync/ports"
-	"github.com/rohandave/tessa-rag/services/repo-sync-service/internal/util"
+	sharedutil "github.com/rohandave/tessa-rag/services/shared/util"
 )
 
 type DeleteRepoServiceInput struct {
@@ -35,7 +36,7 @@ func NewDeleteRepoService(input *DeleteRepoServiceInput, snapshotStoreRepo ports
 }
 
 func (s *DeleteRepoService) DeleteRepo() (err error) {
-	started, err := s.repoRegistryRepo.TryStartDeletion(s.repoURL)
+	started, err := s.repoRegistryRepo.TryStartDeletion(context.Background(), s.repoURL)
 	if err != nil {
 		return err
 	}
@@ -48,7 +49,7 @@ func (s *DeleteRepoService) DeleteRepo() (err error) {
 			return
 		}
 
-		cleanupErr := s.repoRegistryRepo.MarkRegistered(s.repoURL)
+		cleanupErr := s.repoRegistryRepo.MarkRegistered(context.Background(), s.repoURL)
 		if cleanupErr != nil {
 			err = fmt.Errorf("%w; additionally failed to reset repo registry state: %v", err, cleanupErr)
 		}
@@ -59,11 +60,11 @@ func (s *DeleteRepoService) DeleteRepo() (err error) {
 		return err
 	}
 
-	err = s.blobStoreRepo.RemoveDirectory(util.HashString(s.repoURL)) // assuming that all files for a repo are stored under a directory named after the repo URL
+	err = s.blobStoreRepo.RemoveDirectory(sharedutil.HashString(s.repoURL)) // assuming that all files for a repo are stored under a directory named after the repo URL
 	if err != nil {
 		return err
 	}
 
-	err = s.repoRegistryRepo.MarkDeleted(s.repoURL)
+	err = s.repoRegistryRepo.MarkDeleted(context.Background(), s.repoURL)
 	return err
 }

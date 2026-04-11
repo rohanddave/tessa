@@ -9,6 +9,7 @@ type Manifest struct {
 }
 
 type ManifestFile struct {
-	FileHash string
-	FileSize int64
+	FileHash      string
+	FileSize      int64
+	FileExtension string
 }
