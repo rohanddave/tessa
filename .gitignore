@@ -8,5 +8,5 @@
 bin/
 dist/
 coverage.out
+.gocache/
 services/*/tmp/
-
