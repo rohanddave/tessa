@@ -182,6 +182,7 @@ func (s *CreatedFileChunkProcessor) extract() {
 			continue
 		}
 
+		s.logger.Printf("built chunks path=%s chunks=%d", fileJob.Path, len(chunks))
 		for _, chunk := range chunks {
 			s.chunksChannel <- chunk
 		}

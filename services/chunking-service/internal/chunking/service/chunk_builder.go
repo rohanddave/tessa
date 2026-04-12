@@ -32,7 +32,14 @@ func (b *ChunkBuilder) Build(snapshot *shareddomain.Snapshot, fileJob *shareddom
 
 	chunkUnits := b.collectChunkUnits(extractedData)
 	if len(chunkUnits) == 0 {
-		return []*shareddomain.Chunk{}, nil
+		return []*shareddomain.Chunk{
+			b.buildChunk(snapshot, fileJob, sharedutil.GenerateUUID(), chunkUnit{
+				Name:      "",
+				Kind:      "file",
+				StartByte: 0,
+				EndByte:   uint32(len(fileJob.Content)),
+			}),
+		}, nil
 	}
 
 	chunks := make([]*shareddomain.Chunk, 0, len(chunkUnits))
@@ -83,8 +90,7 @@ func (b *ChunkBuilder) buildChunk(snapshot *shareddomain.Snapshot, fileJob *shar
 		Status:                 "pending_index",
 		TextSearchEngineStatus: "pending",
 		VectorDbStatus:         "pending",
-		PrevChunkID:            "pending",
-		NextChunkID:            "pending",
+		GraphDbStatus:          "pending",
 		CreatedAt:              time.Now().UTC().Unix(),
 	}
 
