@@ -28,7 +28,7 @@ func NewIndexingService(logger *log.Logger, chunkRepo *ports.ChunkRepo, textSear
 }
 
 func (s *IndexingService) HandleChunkEvent(ctx context.Context, event domain.ChunkIndexingEvent) error {
-	s.logger.Printf("handling chunk indexing event type=%s chunk_id=%s snapshot=%s", event.EventType, event.ChunkID, event.SnapshotID)
+	s.logf("handling chunk indexing event type=%s chunk_id=%s snapshot=%s", event.EventType, event.ChunkID, event.SnapshotID)
 
 	switch event.EventType {
 	case domain.ChunkIndexRequestedEvent:
@@ -49,18 +49,29 @@ func (s *IndexingService) indexChunk(ctx context.Context, chunkID string) error 
 	if err := s.textSearch.IndexChunk(ctx, chunk); err != nil {
 		return fmt.Errorf("index chunk %s in elasticsearch: %w", chunkID, err)
 	}
+	if err := s.chunkRepo.MarkTextSearchIndexed(ctx, chunkID); err != nil {
+		return err
+	}
+
 	if err := s.vectorStore.IndexChunk(ctx, chunk); err != nil {
 		return fmt.Errorf("index chunk %s in pinecone: %w", chunkID, err)
 	}
+	if err := s.chunkRepo.MarkVectorIndexed(ctx, chunkID); err != nil {
+		return err
+	}
+
 	if err := s.graphStore.IndexChunk(ctx, chunk); err != nil {
 		return fmt.Errorf("index chunk %s in neo4j: %w", chunkID, err)
+	}
+	if err := s.chunkRepo.MarkGraphIndexed(ctx, chunkID); err != nil {
+		return err
 	}
 
 	if err := s.chunkRepo.MarkChunkIndexed(ctx, chunkID); err != nil {
 		return err
 	}
 
-	s.logger.Printf("indexed chunk chunk_id=%s file=%s symbol=%s type=%s", chunkID, chunk.FilePath, chunk.SymbolName, chunk.SymbolType)
+	s.logf("indexed chunk chunk_id=%s file=%s symbol=%s type=%s", chunkID, chunk.FilePath, chunk.SymbolName, chunk.SymbolType)
 	return nil
 }
 
@@ -68,17 +79,34 @@ func (s *IndexingService) deleteChunk(ctx context.Context, chunkID string) error
 	if err := s.textSearch.DeleteChunk(ctx, chunkID); err != nil {
 		return fmt.Errorf("delete chunk %s from elasticsearch: %w", chunkID, err)
 	}
+	if err := s.chunkRepo.MarkTextSearchDeleted(ctx, chunkID); err != nil {
+		return err
+	}
+
 	if err := s.vectorStore.DeleteChunk(ctx, chunkID); err != nil {
 		return fmt.Errorf("delete chunk %s from pinecone: %w", chunkID, err)
 	}
+	if err := s.chunkRepo.MarkVectorDeleted(ctx, chunkID); err != nil {
+		return err
+	}
+
 	if err := s.graphStore.DeleteChunk(ctx, chunkID); err != nil {
 		return fmt.Errorf("delete chunk %s from neo4j: %w", chunkID, err)
+	}
+	if err := s.chunkRepo.MarkGraphDeleted(ctx, chunkID); err != nil {
+		return err
 	}
 
 	if err := s.chunkRepo.MarkChunkDeleted(ctx, chunkID); err != nil {
 		return err
 	}
 
-	s.logger.Printf("deleted chunk from indexes chunk_id=%s", chunkID)
+	s.logf("deleted chunk from indexes chunk_id=%s", chunkID)
 	return nil
+}
+
+func (s *IndexingService) logf(format string, args ...any) {
+	if s.logger != nil {
+		s.logger.Printf(format, args...)
+	}
 }

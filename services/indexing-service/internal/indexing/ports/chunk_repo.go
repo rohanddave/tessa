@@ -105,10 +105,7 @@ func (r *ChunkRepo) MarkChunkIndexed(ctx context.Context, chunkID string) error 
 	const query = `
 		UPDATE chunks
 		SET
-			status = 'indexed',
-			elasticsearch_status = 'indexed',
-			pinecone_status = 'indexed',
-			neo4j_status = 'indexed'
+			status = 'indexed'
 		WHERE chunk_id = $1
 	`
 
@@ -120,20 +117,107 @@ func (r *ChunkRepo) MarkChunkIndexed(ctx context.Context, chunkID string) error 
 	return nil
 }
 
+func (r *ChunkRepo) MarkTextSearchIndexed(ctx context.Context, chunkID string) error {
+	const query = `
+		UPDATE chunks
+		SET elasticsearch_status = 'indexed'
+		WHERE chunk_id = $1
+	`
+
+	_, err := r.pool.Exec(ctx, query, chunkID)
+	if err != nil {
+		return fmt.Errorf("mark chunk %s indexed in elasticsearch: %w", chunkID, err)
+	}
+
+	return nil
+}
+
+func (r *ChunkRepo) MarkVectorIndexed(ctx context.Context, chunkID string) error {
+	const query = `
+		UPDATE chunks
+		SET pinecone_status = 'indexed'
+		WHERE chunk_id = $1
+	`
+
+	_, err := r.pool.Exec(ctx, query, chunkID)
+	if err != nil {
+		return fmt.Errorf("mark chunk %s indexed in pinecone: %w", chunkID, err)
+	}
+
+	return nil
+}
+
+func (r *ChunkRepo) MarkGraphIndexed(ctx context.Context, chunkID string) error {
+	const query = `
+		UPDATE chunks
+		SET neo4j_status = 'indexed'
+		WHERE chunk_id = $1
+	`
+
+	_, err := r.pool.Exec(ctx, query, chunkID)
+	if err != nil {
+		return fmt.Errorf("mark chunk %s indexed in neo4j: %w", chunkID, err)
+	}
+
+	return nil
+}
+
 func (r *ChunkRepo) MarkChunkDeleted(ctx context.Context, chunkID string) error {
 	const query = `
 		UPDATE chunks
 		SET
-			status = 'deleted',
-			elasticsearch_status = 'deleted',
-			pinecone_status = 'deleted',
-			neo4j_status = 'deleted'
+			status = 'deleted'
 		WHERE chunk_id = $1
 	`
 
 	_, err := r.pool.Exec(ctx, query, chunkID)
 	if err != nil {
 		return fmt.Errorf("mark chunk %s deleted: %w", chunkID, err)
+	}
+
+	return nil
+}
+
+func (r *ChunkRepo) MarkTextSearchDeleted(ctx context.Context, chunkID string) error {
+	const query = `
+		UPDATE chunks
+		SET elasticsearch_status = 'deleted'
+		WHERE chunk_id = $1
+	`
+
+	_, err := r.pool.Exec(ctx, query, chunkID)
+	if err != nil {
+		return fmt.Errorf("mark chunk %s deleted from elasticsearch: %w", chunkID, err)
+	}
+
+	return nil
+}
+
+func (r *ChunkRepo) MarkVectorDeleted(ctx context.Context, chunkID string) error {
+	const query = `
+		UPDATE chunks
+		SET pinecone_status = 'deleted'
+		WHERE chunk_id = $1
+	`
+
+	_, err := r.pool.Exec(ctx, query, chunkID)
+	if err != nil {
+		return fmt.Errorf("mark chunk %s deleted from pinecone: %w", chunkID, err)
+	}
+
+	return nil
+}
+
+func (r *ChunkRepo) MarkGraphDeleted(ctx context.Context, chunkID string) error {
+	const query = `
+		UPDATE chunks
+		SET neo4j_status = 'deleted'
+		WHERE chunk_id = $1
+	`
+
+	_, err := r.pool.Exec(ctx, query, chunkID)
+	if err != nil {
+		return fmt.Errorf("mark chunk %s deleted from neo4j: %w", chunkID, err)
 	}
 
 	return nil
