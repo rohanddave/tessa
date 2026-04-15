@@ -46,12 +46,15 @@ x-indexing-service-environment: &indexing-service-environment
   SNAPSHOT_STORE_SSLMODE: disable
   ELASTICSEARCH_URL: http://elasticsearch:9200
   ELASTICSEARCH_INDEX: tessa-chunks
-  PINECONE_HOST: http://pinecone-local:5080
+  PINECONE_HOST: http://pinecone-index:5081
   PINECONE_API_KEY: pclocal
-  PINECONE_API_VERSION: "2026-04"
+  PINECONE_API_VERSION: "2025-01"
   PINECONE_INDEX: tessa-chunks
   PINECONE_NAMESPACE: __default__
-  PINECONE_TEXT_FIELD: content
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OPENAI_BASE_URL: https://api.openai.com/v1
+  OPENAI_EMBEDDING_MODEL: text-embedding-3-small
+  OPENAI_EMBEDDING_DIMENSIONS: "1536"
   NEO4J_URI: bolt://neo4j:7687
   NEO4J_USER: neo4j
   NEO4J_PASSWORD: password
@@ -104,7 +107,7 @@ x-indexing-service-common: &indexing-service-common
       condition: service_healthy
     neo4j:
       condition: service_healthy
-    pinecone-local:
+    pinecone-index:
       condition: service_started
   environment: *indexing-service-environment
   networks:
@@ -249,15 +252,18 @@ services:
     networks:
       - tessa-net
 
-  pinecone-local:
-    image: ghcr.io/pinecone-io/pinecone-local:latest
-    container_name: tessa-pinecone-local
+  pinecone-index:
+    image: ghcr.io/pinecone-io/pinecone-index:latest
+    container_name: tessa-pinecone-index
     platform: linux/amd64
     environment:
-      PORT: 5080
-      PINECONE_HOST: pinecone-local
+      PORT: 5081
+      INDEX_TYPE: serverless
+      VECTOR_TYPE: dense
+      DIMENSION: 1536
+      METRIC: cosine
     ports:
-      - "5080-5090:5080-5090"
+      - "5081:5081"
     networks:
       - tessa-net
 

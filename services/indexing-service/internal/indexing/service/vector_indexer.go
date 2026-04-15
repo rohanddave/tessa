@@ -11,20 +11,23 @@ import (
 	"strings"
 
 	"github.com/rohandave/tessa-rag/services/indexing-service/internal/config"
+	"github.com/rohandave/tessa-rag/services/indexing-service/internal/indexing/ports"
 	"github.com/rohandave/tessa-rag/services/shared/domain"
 )
 
 type PineconeIndexer struct {
-	logger     *log.Logger
-	config     *config.PineconeConfig
-	httpClient *http.Client
+	logger            *log.Logger
+	config            *config.PineconeConfig
+	embeddingProvider ports.EmbeddingProvider
+	httpClient        *http.Client
 }
 
-func NewPineconeIndexer(logger *log.Logger, cfg *config.PineconeConfig) *PineconeIndexer {
+func NewPineconeIndexer(logger *log.Logger, cfg *config.PineconeConfig, embeddingProvider ports.EmbeddingProvider) *PineconeIndexer {
 	return &PineconeIndexer{
-		logger:     logger,
-		config:     cfg,
-		httpClient: http.DefaultClient,
+		logger:            logger,
+		config:            cfg,
+		embeddingProvider: embeddingProvider,
+		httpClient:        http.DefaultClient,
 	}
 }
 
@@ -33,18 +36,35 @@ func (i *PineconeIndexer) IndexChunk(ctx context.Context, chunk *domain.Chunk) e
 		return fmt.Errorf("chunk is nil")
 	}
 
-	record, err := pineconeRecordFromChunk(chunk, i.textField())
+	if i.embeddingProvider == nil {
+		return fmt.Errorf("embedding provider is nil")
+	}
+
+	embedding, err := i.embeddingProvider.Embed(ctx, chunk.Content)
+	if err != nil {
+		return fmt.Errorf("embed chunk %s: %w", chunk.ChunkID, err)
+	}
+
+	metadata, err := pineconeMetadataFromChunk(chunk)
 	if err != nil {
 		return err
 	}
 
-	body, err := json.Marshal(record)
+	body, err := json.Marshal(map[string]any{
+		"namespace": i.namespace(),
+		"vectors": []map[string]any{
+			{
+				"id":       chunk.ChunkID,
+				"values":   embedding,
+				"metadata": metadata,
+			},
+		},
+	})
 	if err != nil {
 		return fmt.Errorf("marshal pinecone upsert request for chunk %s: %w", chunk.ChunkID, err)
 	}
-	body = append(body, '\n')
 
-	endpoint, err := i.recordsUpsertURL()
+	endpoint, err := i.vectorsUpsertURL()
 	if err != nil {
 		return err
 	}
@@ -53,7 +73,7 @@ func (i *PineconeIndexer) IndexChunk(ctx context.Context, chunk *domain.Chunk) e
 	if err != nil {
 		return fmt.Errorf("create pinecone upsert request for chunk %s: %w", chunk.ChunkID, err)
 	}
-	i.setHeaders(req, "application/x-ndjson")
+	i.setHeaders(req, "application/json")
 
 	res, err := i.httpClient.Do(req)
 	if err != nil {
@@ -65,7 +85,7 @@ func (i *PineconeIndexer) IndexChunk(ctx context.Context, chunk *domain.Chunk) e
 		return fmt.Errorf("pinecone upsert chunk %s failed: %s", chunk.ChunkID, responseSummary(res))
 	}
 
-	i.logger.Printf("pinecone upserted chunk host=%s index=%s namespace=%s chunk_id=%s", i.config.Host, i.config.Index, i.namespace(), chunk.ChunkID)
+	i.logf("pinecone upserted chunk host=%s index=%s namespace=%s chunk_id=%s dimensions=%d", i.config.Host, i.config.Index, i.namespace(), chunk.ChunkID, len(embedding))
 	return nil
 }
 
@@ -103,28 +123,26 @@ func (i *PineconeIndexer) DeleteChunk(ctx context.Context, chunkID string) error
 		return fmt.Errorf("pinecone delete chunk %s failed: %s", chunkID, responseSummary(res))
 	}
 
-	i.logger.Printf("pinecone deleted chunk host=%s index=%s namespace=%s chunk_id=%s", i.config.Host, i.config.Index, i.namespace(), chunkID)
+	i.logf("pinecone deleted chunk host=%s index=%s namespace=%s chunk_id=%s", i.config.Host, i.config.Index, i.namespace(), chunkID)
 	return nil
 }
 
-func pineconeRecordFromChunk(chunk *domain.Chunk, textField string) (map[string]any, error) {
+func pineconeMetadataFromChunk(chunk *domain.Chunk) (map[string]any, error) {
 	body, err := json.Marshal(chunk)
 	if err != nil {
-		return nil, fmt.Errorf("marshal chunk %s for pinecone record: %w", chunk.ChunkID, err)
+		return nil, fmt.Errorf("marshal chunk %s for pinecone metadata: %w", chunk.ChunkID, err)
 	}
 
-	var record map[string]any
-	if err := json.Unmarshal(body, &record); err != nil {
-		return nil, fmt.Errorf("unmarshal chunk %s for pinecone record: %w", chunk.ChunkID, err)
+	var metadata map[string]any
+	if err := json.Unmarshal(body, &metadata); err != nil {
+		return nil, fmt.Errorf("unmarshal chunk %s for pinecone metadata: %w", chunk.ChunkID, err)
 	}
 
-	record["_id"] = chunk.ChunkID
-	record[textField] = chunk.Content
-	return record, nil
+	return metadata, nil
 }
 
-func (i *PineconeIndexer) recordsUpsertURL() (string, error) {
-	return i.buildURL("/records/namespaces/" + url.PathEscape(i.namespace()) + "/upsert")
+func (i *PineconeIndexer) vectorsUpsertURL() (string, error) {
+	return i.buildURL("/vectors/upsert")
 }
 
 func (i *PineconeIndexer) vectorsDeleteURL() (string, error) {
@@ -159,14 +177,6 @@ func (i *PineconeIndexer) namespace() string {
 	return i.config.Namespace
 }
 
-func (i *PineconeIndexer) textField() string {
-	if i == nil || i.config == nil || strings.TrimSpace(i.config.TextField) == "" {
-		return "content"
-	}
-
-	return i.config.TextField
-}
-
 func (i *PineconeIndexer) setHeaders(req *http.Request, contentType string) {
 	req.Header.Set("Content-Type", contentType)
 	if i != nil && i.config != nil && strings.TrimSpace(i.config.APIKey) != "" {
@@ -174,5 +184,11 @@ func (i *PineconeIndexer) setHeaders(req *http.Request, contentType string) {
 	}
 	if i != nil && i.config != nil && strings.TrimSpace(i.config.APIVersion) != "" {
 		req.Header.Set("X-Pinecone-Api-Version", i.config.APIVersion)
+	}
+}
+
+func (i *PineconeIndexer) logf(format string, args ...any) {
+	if i.logger != nil {
+		i.logger.Printf(format, args...)
 	}
 }

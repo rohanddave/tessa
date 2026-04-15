@@ -31,7 +31,7 @@ func main() {
 		logger,
 		chunkRepo,
 		service.NewElasticsearchIndexer(logger, cfg.Elasticsearch),
-		service.NewPineconeIndexer(logger, cfg.Pinecone),
+		service.NewPineconeIndexer(logger, cfg.Pinecone, service.NewOpenAIEmbeddingProvider(logger, cfg.OpenAI)),
 		service.NewNeo4jIndexer(logger, cfg.Neo4j),
 	)
 
