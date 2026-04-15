@@ -57,7 +57,7 @@ func main() {
 		ExtractionService:    extractionService,
 	})
 
-	createAndRunNKafkaConsumers(5, cfg.Kafka.SnapshotsTopic, logger, chunkingService)
+	createAndRunNKafkaConsumers(10, cfg.Kafka.SnapshotsTopic, logger, chunkingService)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)

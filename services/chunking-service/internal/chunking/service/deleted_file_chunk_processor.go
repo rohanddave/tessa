@@ -41,33 +41,44 @@ func NewDeletedFileChunkProcessor(input *DeletedFileChunkProcessorInput) *Delete
 	}
 }
 
-func (s *DeletedFileChunkProcessor) Run(fileNames []string) error {
-	if len(fileNames) > 0 {
-		deletedChunkIDs, err := s.chunkRepo.DeleteChunksForFiles(context.Background(), fileNames)
-		if err != nil {
-			s.logger.Printf("failed to delete chunks snapshot=%s file_hashes=%d: %v", s.snapshot.Id, len(fileNames), err)
-			return err
-		}
-		s.logger.Printf("marked existing chunks pending delete snapshot=%s file_hashes=%d chunks=%d", s.snapshot.Id, len(fileNames), len(deletedChunkIDs))
-		for _, chunkID := range deletedChunkIDs {
-			event := shareddomain.ChunkIndexingEvent{
-				EventType:  shareddomain.ChunkDeleteRequestedEvent,
-				ChunkID:    chunkID,
-				RepoURL:    s.snapshot.RepoURL,
-				Branch:     s.snapshot.Branch,
-				SnapshotID: s.snapshot.Id,
-			}
-			value, err := json.Marshal(event)
-			if err != nil {
-				s.logger.Printf("failed to marshal chunk indexing event chunk_id=%s: %v", event.ChunkID, err)
-				continue
-			}
-			if err := s.kafkaProducer.Produce(s.kafkaIndexingTopic, []byte(event.ChunkID), value); err != nil {
-				s.logger.Printf("failed to produce indexing event chunk_id=%s: %v", event.ChunkID, err)
-				continue
-			}
-		}
-		s.logger.Printf("published chunk delete events snapshot=%s chunks=%d", s.snapshot.Id, len(deletedChunkIDs))
+func (s *DeletedFileChunkProcessor) Run(changeLogFiles []shareddomain.ChangeLogFile) error {
+	if len(changeLogFiles) == 0 {
+		// no files to process
+		s.logger.Printf("no files to delete")
+		return nil
 	}
+
+	rawStorageFileNames := make([]string, 0, len(changeLogFiles))
+
+	for _, file := range changeLogFiles {
+		s.logger.Printf("queued deleted file for chunk deletion snapshot=%s path=%s hash=%s size=%d", s.snapshot.Id, file.Path, file.FileHash, file.FileSize)
+		rawStorageFileNames = append(rawStorageFileNames, file.FileHash)
+	}
+
+	deletedChunkIDs, err := s.chunkRepo.DeleteChunksForFiles(context.Background(), rawStorageFileNames)
+	if err != nil {
+		s.logger.Printf("failed to delete chunks snapshot=%s file_hashes=%d: %v", s.snapshot.Id, len(rawStorageFileNames), err)
+		return err
+	}
+	s.logger.Printf("marked existing chunks pending delete snapshot=%s file_hashes=%d chunks=%d", s.snapshot.Id, len(rawStorageFileNames), len(deletedChunkIDs))
+	for _, chunkID := range deletedChunkIDs {
+		event := shareddomain.ChunkIndexingEvent{
+			EventType:  shareddomain.ChunkDeleteRequestedEvent,
+			ChunkID:    chunkID,
+			RepoURL:    s.snapshot.RepoURL,
+			Branch:     s.snapshot.Branch,
+			SnapshotID: s.snapshot.Id,
+		}
+		value, err := json.Marshal(event)
+		if err != nil {
+			s.logger.Printf("failed to marshal chunk indexing event chunk_id=%s: %v", event.ChunkID, err)
+			continue
+		}
+		if err := s.kafkaProducer.Produce(s.kafkaIndexingTopic, []byte(event.ChunkID), value); err != nil {
+			s.logger.Printf("failed to produce indexing event chunk_id=%s: %v", event.ChunkID, err)
+			continue
+		}
+	}
+	s.logger.Printf("published chunk delete events snapshot=%s chunks=%d", s.snapshot.Id, len(deletedChunkIDs))
 	return nil
 }

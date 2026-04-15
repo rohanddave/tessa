@@ -7,7 +7,6 @@ import (
 	"io"
 	"mime"
 	"net/url"
-	"os"
 	"path"
 	"strings"
 	"sync"
@@ -101,7 +100,7 @@ func (r *Repo) GetFile(fileURL string) (*shareddomain.FileJob, error) {
 		Path:      objectKey,
 		Size:      objectInfo.Size,
 		Content:   content,
-		Extension: extractExtensionFromMetadata(objectInfo.UserMetadata, objectKey),
+		Extension: extractValueFromMetadataForKey(objectInfo.UserMetadata, extensionMetadataKey, objectKey),
 	}, nil
 }
 
@@ -249,21 +248,12 @@ func normalizeExtension(extension string) string {
 	return strings.TrimPrefix(strings.TrimSpace(extension), ".")
 }
 
-func extractExtensionFromMetadata(metadata map[string]string, objectKey string) string {
+func extractValueFromMetadataForKey(metadata map[string]string, metadataKey string, objectKey string) string {
 	for key, value := range metadata {
-		if strings.EqualFold(key, extensionMetadataKey) || strings.EqualFold(key, "X-Amz-Meta-"+extensionMetadataKey) {
+		if strings.EqualFold(key, metadataKey) || strings.EqualFold(key, "X-Amz-Meta-"+metadataKey) {
 			return normalizeExtension(value)
 		}
 	}
 
 	return normalizeExtension(path.Ext(objectKey))
-}
-
-func envOrDefault(key, fallback string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
-	}
-
-	return value
 }
