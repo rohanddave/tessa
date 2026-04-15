@@ -45,6 +45,7 @@ x-indexing-service-environment: &indexing-service-environment
   SNAPSHOT_STORE_PASSWORD: postgres
   SNAPSHOT_STORE_SSLMODE: disable
   ELASTICSEARCH_URL: http://elasticsearch:9200
+  ELASTICSEARCH_INDEX: tessa-chunks
   PINECONE_HOST: http://pinecone-local:5080
   PINECONE_API_KEY: pclocal
   PINECONE_INDEX: tessa-chunks

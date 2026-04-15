@@ -16,7 +16,8 @@ type Config struct {
 }
 
 type ElasticsearchConfig struct {
-	URL string
+	URL   string
+	Index string
 }
 
 type PineconeConfig struct {
@@ -37,7 +38,8 @@ func Load() *Config {
 		Kafka:       sharedkafka.LoadConfig(),
 		Database:    sharedpostgres.LoadConfig(),
 		Elasticsearch: &ElasticsearchConfig{
-			URL: sharedutil.EnvOrDefault("ELASTICSEARCH_URL", "http://localhost:9200"),
+			URL:   sharedutil.EnvOrDefault("ELASTICSEARCH_URL", "http://localhost:9200"),
+			Index: sharedutil.EnvOrDefault("ELASTICSEARCH_INDEX", "tessa-chunks"),
 		},
 		Pinecone: &PineconeConfig{
 			Host:   sharedutil.EnvOrDefault("PINECONE_HOST", "http://localhost:5080"),
