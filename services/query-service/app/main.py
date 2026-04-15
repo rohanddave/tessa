@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 
 from fastapi import Depends, FastAPI
@@ -9,7 +11,12 @@ from app.context import ContextAssemblyService
 from app.models.answer import AnswerRequest, AnswerResponse
 from app.models.query import QueryRequest
 from app.models.retrieval import RetrievalResponse
+from app.retrieval.context_expansion import ContextExpansionService
+from app.retrieval.retrievers import GraphRetriever, KeywordRetriever, VectorRetriever
 from app.retrieval import RetrievalOrchestrator
+from app.stores.elasticsearch import ElasticsearchStore
+from app.stores.openai import OpenAIEmbeddingStore
+from app.stores.pinecone import PineconeStore
 
 
 def build_app() -> FastAPI:
@@ -42,7 +49,19 @@ def build_app() -> FastAPI:
 class QueryServices:
     def __init__(self, settings: Settings) -> None:
         logger = logging.getLogger(settings.service_name)
-        self.retrieval = RetrievalOrchestrator(logger=logger)
+        elasticsearch = ElasticsearchStore(settings)
+        pinecone = PineconeStore(settings)
+        embeddings = OpenAIEmbeddingStore(settings)
+
+        self.retrieval = RetrievalOrchestrator(
+            logger=logger,
+            retrievers=[
+                KeywordRetriever(elasticsearch),
+                VectorRetriever(embeddings, pinecone),
+                GraphRetriever(),
+            ],
+            context_expansion=ContextExpansionService(elasticsearch),
+        )
         self.context_assembly = ContextAssemblyService()
         self.answering = LLMAnsweringService(LLMClient(settings))
 

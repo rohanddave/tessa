@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Protocol
 
 from app.models.query import QueryRequest

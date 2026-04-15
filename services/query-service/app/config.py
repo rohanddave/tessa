@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -33,6 +35,8 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     openai_answer_model: str = "gpt-5.4-mini"
+    openai_answer_max_output_tokens: int = 1200
+    openai_timeout_seconds: float = 60
     openai_embedding_model: str = "text-embedding-3-small"
     openai_embedding_dimensions: int = 1536
 

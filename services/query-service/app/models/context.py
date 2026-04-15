@@ -1,22 +1,26 @@
+from __future__ import annotations
+
+from typing import List, Optional
+
 from pydantic import BaseModel, Field
 
 
 class ContextBlock(BaseModel):
     chunk_id: str
-    file_path: str | None = None
-    language: str | None = None
-    symbol_name: str | None = None
-    start_line: int | None = None
-    end_line: int | None = None
+    file_path: Optional[str] = None
+    language: Optional[str] = None
+    symbol_name: Optional[str] = None
+    start_line: Optional[int] = None
+    end_line: Optional[int] = None
     content: str
     score: float = 0
-    sources: list[str] = Field(default_factory=list)
+    sources: List[str] = Field(default_factory=list)
 
 
 class AssembledContext(BaseModel):
-    repo_url: str | None = None
+    repo_url: Optional[str] = None
     branch: str = "main"
-    snapshot_id: str | None = None
+    snapshot_id: Optional[str] = None
     query: str
     token_budget: int
-    blocks: list[ContextBlock] = Field(default_factory=list)
+    blocks: List[ContextBlock] = Field(default_factory=list)
