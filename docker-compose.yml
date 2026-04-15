@@ -34,6 +34,31 @@ x-chunking-service-environment: &chunking-service-environment
   S3_SECRET_ACCESS_KEY: minioadmin
   S3_USE_SSL: "false"
 
+x-indexing-service-environment: &indexing-service-environment
+  SERVICE_NAME: indexing-service
+  KAFKA_BROKERS: kafka:9092
+  KAFKA_INDEXING_TOPIC: chunking.chunk-indexing-events
+  SNAPSHOT_STORE_HOST: snapshot-store
+  SNAPSHOT_STORE_PORT: "5432"
+  SNAPSHOT_STORE_DB: snapshot_store
+  SNAPSHOT_STORE_USER: postgres
+  SNAPSHOT_STORE_PASSWORD: postgres
+  SNAPSHOT_STORE_SSLMODE: disable
+  ELASTICSEARCH_URL: http://elasticsearch:9200
+  ELASTICSEARCH_INDEX: tessa-chunks
+  PINECONE_HOST: http://pinecone-index:5081
+  PINECONE_API_KEY: pclocal
+  PINECONE_API_VERSION: "2025-01"
+  PINECONE_INDEX: tessa-chunks
+  PINECONE_NAMESPACE: __default__
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OPENAI_BASE_URL: https://api.openai.com/v1
+  OPENAI_EMBEDDING_MODEL: text-embedding-3-small
+  OPENAI_EMBEDDING_DIMENSIONS: "1536"
+  NEO4J_URI: bolt://neo4j:7687
+  NEO4J_USER: neo4j
+  NEO4J_PASSWORD: password
+
 x-repo-sync-service-common: &repo-sync-service-common
   image: repo-sync-service:local
   build:
@@ -68,6 +93,26 @@ x-chunking-service-common: &chunking-service-common
   networks:
     - tessa-net
 
+x-indexing-service-common: &indexing-service-common
+  image: indexing-service:local
+  build:
+    context: ./services
+    dockerfile: indexing-service/Dockerfile
+  depends_on:
+    kafka:
+      condition: service_healthy
+    snapshot-store:
+      condition: service_healthy
+    elasticsearch:
+      condition: service_healthy
+    neo4j:
+      condition: service_healthy
+    pinecone-index:
+      condition: service_started
+  environment: *indexing-service-environment
+  networks:
+    - tessa-net
+
 services:
   kafka:
     image: apache/kafka:3.7.2
@@ -87,6 +132,7 @@ services:
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 5
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
@@ -169,6 +215,59 @@ services:
     networks:
       - tessa-net
 
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    container_name: tessa-elasticsearch
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks:
+      - tessa-net
+
+  neo4j:
+    image: neo4j:5-community
+    container_name: tessa-neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/password
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p password 'RETURN 1' >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks:
+      - tessa-net
+
+  pinecone-index:
+    image: ghcr.io/pinecone-io/pinecone-index:latest
+    container_name: tessa-pinecone-index
+    platform: linux/amd64
+    environment:
+      PORT: 5081
+      INDEX_TYPE: serverless
+      VECTOR_TYPE: dense
+      DIMENSION: 1536
+      METRIC: cosine
+    ports:
+      - "5081:5081"
+    networks:
+      - tessa-net
+
   repo-sync-service-api:
     <<: *repo-sync-service-common
     container_name: repo-sync-service-api
@@ -191,6 +290,14 @@ services:
       <<: *chunking-service-environment
       SERVICE_NAME: chunking-service
 
+  indexing-service:
+    <<: *indexing-service-common
+    container_name: indexing-service
+    command: ["indexing-service-consumer"]
+    environment:
+      <<: *indexing-service-environment
+      SERVICE_NAME: indexing-service
+
 networks:
   tessa-net:
     driver: bridge
@@ -199,3 +306,6 @@ volumes:
   kafka-data:
   minio-data:
   snapshot-store-data:
+  elasticsearch-data:
+  neo4j-data:
+  neo4j-logs:
