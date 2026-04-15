@@ -21,9 +21,12 @@ type ElasticsearchConfig struct {
 }
 
 type PineconeConfig struct {
-	Host   string
-	APIKey string
-	Index  string
+	Host       string
+	APIKey     string
+	APIVersion string
+	Index      string
+	Namespace  string
+	TextField  string
 }
 
 type Neo4jConfig struct {
@@ -42,9 +45,12 @@ func Load() *Config {
 			Index: sharedutil.EnvOrDefault("ELASTICSEARCH_INDEX", "tessa-chunks"),
 		},
 		Pinecone: &PineconeConfig{
-			Host:   sharedutil.EnvOrDefault("PINECONE_HOST", "http://localhost:5080"),
-			APIKey: sharedutil.EnvOrDefault("PINECONE_API_KEY", "pclocal"),
-			Index:  sharedutil.EnvOrDefault("PINECONE_INDEX", "tessa-chunks"),
+			Host:       sharedutil.EnvOrDefault("PINECONE_HOST", "http://localhost:5080"),
+			APIKey:     sharedutil.EnvOrDefault("PINECONE_API_KEY", "pclocal"),
+			APIVersion: sharedutil.EnvOrDefault("PINECONE_API_VERSION", "2026-04"),
+			Index:      sharedutil.EnvOrDefault("PINECONE_INDEX", "tessa-chunks"),
+			Namespace:  sharedutil.EnvOrDefault("PINECONE_NAMESPACE", "__default__"),
+			TextField:  sharedutil.EnvOrDefault("PINECONE_TEXT_FIELD", "content"),
 		},
 		Neo4j: &Neo4jConfig{
 			URI:      sharedutil.EnvOrDefault("NEO4J_URI", "bolt://localhost:7687"),
