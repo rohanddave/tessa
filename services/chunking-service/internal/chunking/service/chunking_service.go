@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"slices"
@@ -50,8 +51,27 @@ func NewChunkingService(input *ChunkingServiceInput) *ChunkingService {
 	}
 }
 
-func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) error {
+func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) (err error) {
 	s.logger.Printf("starting chunking pipeline for snapshot=%s repo=%s changelog=%s", snapshot.Id, snapshot.RepoURL, snapshot.ChangeLogURL)
+
+	ctx := context.Background()
+	claimed, err := s.chunkRepo.TryStartSnapshotChunking(ctx, &snapshot)
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		s.logger.Printf("skipping snapshot chunking because job already completed snapshot=%s repo=%s", snapshot.Id, snapshot.RepoURL)
+		return nil
+	}
+
+	defer func() {
+		if err == nil {
+			return
+		}
+		if markErr := s.chunkRepo.MarkSnapshotChunkingFailed(context.Background(), snapshot.Id); markErr != nil {
+			s.logger.Printf("failed to mark snapshot chunking failed snapshot=%s: %v", snapshot.Id, markErr)
+		}
+	}()
 
 	changeLogFile, err := s.blobStoreRepo.GetFile(snapshot.ChangeLogURL)
 	if err != nil {
@@ -101,9 +121,9 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) error {
 		kafkaProducer:      s.kafkaProducer,
 		kafkaIndexingTopic: s.indexingTopic,
 	}).Run(changeLogFileContent.Deleted)
-
 	if err != nil {
-		s.logger.Printf("error deleting files")
+		s.logger.Printf("error deleting files snapshot=%s: %v", snapshot.Id, err)
+		return err
 	}
 
 	err = NewCreatedFileChunkProcessor(&CreatedFileChunkProcessorInput{
@@ -117,8 +137,15 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) error {
 		kafkaIndexingTopic:   s.indexingTopic,
 	}).Run(changeLogFileContent.Created)
 	if err != nil {
-		s.logger.Printf("error creating files")
+		s.logger.Printf("error creating files snapshot=%s: %v", snapshot.Id, err)
+		return err
 	}
 
+	if err = s.chunkRepo.MarkSnapshotChunkingCompleted(ctx, snapshot.Id); err != nil {
+		s.logger.Printf("error marking snapshot with id=%s as completed: %v", snapshot.Id, err)
+		return err
+	}
+
+	s.logger.Printf("successfully completed chunking snapshot with id=%s", snapshot.Id)
 	return nil
 }

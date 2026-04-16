@@ -19,6 +19,8 @@ import (
 	sharedkafka "github.com/rohandave/tessa-rag/services/shared/kafka"
 )
 
+const chunkingMaxPollIntervalMs = 60 * 60 * 1000
+
 func main() {
 	cfg := config.Load()
 
@@ -69,7 +71,8 @@ func main() {
 func createAndRunNKafkaConsumers(number int, topic string, logger *log.Logger, chunkingService *service.ChunkingService) {
 	for i := 0; i < number; i++ {
 		consumer, err := sharedkafka.NewConsumer(&sharedkafka.ConsumerConfig{
-			GroupID: "chunking-service-consumer-group",
+			GroupID:           "chunking-service-consumer-group",
+			MaxPollIntervalMs: chunkingMaxPollIntervalMs,
 		})
 		if err != nil {
 			logger.Fatalf("failed to create consumer for topic %s: %v", topic, err)
@@ -83,7 +86,7 @@ func createAndRunNKafkaConsumers(number int, topic string, logger *log.Logger, c
 			defer consumer.Close()
 
 			for {
-				message, err := consumer.ReadMessage(5 * time.Second)
+				message, err := consumer.ReadMessage(1 * time.Second)
 				if err != nil {
 					logger.Printf("consumer %d read error on topic %s: %v", workerID, topic, err)
 					continue
@@ -106,6 +109,8 @@ func createAndRunNKafkaConsumers(number int, topic string, logger *log.Logger, c
 					logger.Printf("consumer %d failed to process snapshot %s: %v", workerID, snapshot.Id, err)
 					continue
 				}
+
+				logger.Printf("consumer %d successfully processed snapshot %s:", workerID, snapshot.Id)
 
 				if err := consumer.CommitMessage(message); err != nil {
 					logger.Printf("consumer %d failed to commit snapshot %s: %v", workerID, snapshot.Id, err)
