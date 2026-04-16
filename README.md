@@ -4,7 +4,7 @@ This repository is a multi-service workspace with one root Docker Compose stack 
 
 ## Current project state
 
-The currently implemented end-to-end slice is:
+The currently implemented end-to-end ingestion/indexing slice is:
 
 1. An HTTP client sends `POST /register-repo-event` to `repo-sync-service-api`.
 2. The API validates the request and converts it into a `RepoEvent`.
@@ -25,6 +25,7 @@ The currently implemented end-to-end slice is:
 
 - `docker-compose.yml`: root orchestration for infrastructure and service containers
 - `services/repo-sync-service`: first application service, written in Go
+- `services/query-service`: Python query-time service for retrieval, context assembly, and LLM answering
 
 ## Shared local infrastructure
 
@@ -43,6 +44,8 @@ Once the stack is up:
 
 - `repo-sync-service-api` is available at `http://localhost:8081`
 - health check is at `http://localhost:8081/healthz`
+- `query-service` is available at `http://localhost:8082`
+- query service health check is at `http://localhost:8082/healthz`
 - Kafka UI is available at `http://localhost:8080`
 - MinIO API is available at `http://localhost:9000`
 - MinIO console is available at `http://localhost:9001`

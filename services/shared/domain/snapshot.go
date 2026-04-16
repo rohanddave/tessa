@@ -7,4 +7,5 @@ type Snapshot struct {
 	CommitSHA    string
 	ManifestURL  string
 	ChangeLogURL string
+	Status       string
 }

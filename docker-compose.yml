@@ -59,6 +59,33 @@ x-indexing-service-environment: &indexing-service-environment
   NEO4J_USER: neo4j
   NEO4J_PASSWORD: password
 
+x-query-service-environment: &query-service-environment
+  SERVICE_NAME: query-service
+  LOG_LEVEL: info
+  SNAPSHOT_STORE_HOST: snapshot-store
+  SNAPSHOT_STORE_PORT: "5432"
+  SNAPSHOT_STORE_DB: snapshot_store
+  SNAPSHOT_STORE_USER: postgres
+  SNAPSHOT_STORE_PASSWORD: postgres
+  SNAPSHOT_STORE_SSLMODE: disable
+  ELASTICSEARCH_URL: http://elasticsearch:9200
+  ELASTICSEARCH_INDEX: tessa-chunks
+  PINECONE_HOST: http://pinecone-index:5081
+  PINECONE_API_KEY: pclocal
+  PINECONE_API_VERSION: "2025-01"
+  PINECONE_INDEX: tessa-chunks
+  PINECONE_NAMESPACE: __default__
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OPENAI_BASE_URL: https://api.openai.com/v1
+  OPENAI_ANSWER_MODEL: gpt-5.4-mini
+  OPENAI_ANSWER_MAX_OUTPUT_TOKENS: "1200"
+  OPENAI_TIMEOUT_SECONDS: "60"
+  OPENAI_EMBEDDING_MODEL: text-embedding-3-small
+  OPENAI_EMBEDDING_DIMENSIONS: "1536"
+  NEO4J_URI: bolt://neo4j:7687
+  NEO4J_USER: neo4j
+  NEO4J_PASSWORD: password
+
 x-repo-sync-service-common: &repo-sync-service-common
   image: repo-sync-service:local
   build:
@@ -113,6 +140,24 @@ x-indexing-service-common: &indexing-service-common
   networks:
     - tessa-net
 
+x-query-service-common: &query-service-common
+  image: query-service:local
+  build:
+    context: ./services
+    dockerfile: query-service/Dockerfile
+  depends_on:
+    snapshot-store:
+      condition: service_healthy
+    elasticsearch:
+      condition: service_healthy
+    neo4j:
+      condition: service_healthy
+    pinecone-index:
+      condition: service_started
+  environment: *query-service-environment
+  networks:
+    - tessa-net
+
 services:
   kafka:
     image: apache/kafka:3.7.2
@@ -132,7 +177,7 @@ services:
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      KAFKA_NUM_PARTITIONS: 5
+      KAFKA_NUM_PARTITIONS: 20
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
@@ -227,7 +272,8 @@ services:
     volumes:
       - elasticsearch-data:/usr/share/elasticsearch/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:9200 >/dev/null || exit 1"]
+      test:
+        ["CMD-SHELL", "curl -fsS http://localhost:9200 >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -246,7 +292,11 @@ services:
       - neo4j-data:/data
       - neo4j-logs:/logs
     healthcheck:
-      test: ["CMD-SHELL", "cypher-shell -u neo4j -p password 'RETURN 1' >/dev/null || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "cypher-shell -u neo4j -p password 'RETURN 1' >/dev/null || exit 1",
+        ]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -297,6 +347,15 @@ services:
     environment:
       <<: *indexing-service-environment
       SERVICE_NAME: indexing-service
+
+  query-service:
+    <<: *query-service-common
+    container_name: query-service
+    environment:
+      <<: *query-service-environment
+      PORT: 8082
+    ports:
+      - "8082:8082"
 
 networks:
   tessa-net:

@@ -51,7 +51,8 @@ func (s *ExtractionService) ExtractFileContent(fileJob *shareddomain.FileJob) (*
 	}
 
 	log.Printf(
-		"completed code extraction symbols=%d containers=%d imports=%d doc_comments=%d classes=%d functions=%d methods=%d module_level_declarations=%d",
+		"completed code extraction for file=%s, symbols=%d containers=%d imports=%d doc_comments=%d classes=%d functions=%d methods=%d module_level_declarations=%d",
+		fileJob.Path,
 		len(parsedData.Symbols),
 		len(parsedData.Containers),
 		len(parsedData.Imports),

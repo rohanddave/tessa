@@ -14,10 +14,14 @@ type ChunkRepo struct {
 }
 
 const (
-	defaultChunkStatus         = "pending_index"
-	defaultTargetIndexStatus   = "pending"
-	defaultTargetDeleteStatus  = "pending_delete"
-	chunkStatusPendingDelete   = "pending_delete"
+	defaultChunkStatus           = "pending_index"
+	defaultTargetIndexStatus     = "pending"
+	defaultTargetDeleteStatus    = "pending_delete"
+	chunkStatusPendingDelete     = "pending_delete"
+	snapshotStatusCreated        = "created"
+	snapshotStatusChunking       = "chunking"
+	snapshotStatusChunked        = "chunked"
+	snapshotChunkingStatusFailed = "chunking_failed"
 )
 
 func NewChunkRepo(ctx context.Context, cfg *sharedpostgres.DatabaseConfig) (*ChunkRepo, error) {
@@ -122,6 +126,94 @@ func (r *ChunkRepo) CreateChunk(ctx context.Context, chunk *domain.Chunk) error 
 	return nil
 }
 
+func (r *ChunkRepo) TryStartSnapshotChunking(ctx context.Context, snapshot *domain.Snapshot) (bool, error) {
+	if snapshot == nil {
+		return false, fmt.Errorf("snapshot cannot be nil")
+	}
+
+	const query = `
+		UPDATE snapshots
+		SET status = $2
+		WHERE id = $1
+			AND status = ANY($3)
+	`
+
+	commandTag, err := r.pool.Exec(
+		ctx,
+		query,
+		snapshot.Id,
+		snapshotStatusChunking,
+		[]string{snapshotStatusCreated, snapshotChunkingStatusFailed},
+	)
+	if err != nil {
+		return false, fmt.Errorf("claim snapshot chunking %s: %w", snapshot.Id, err)
+	}
+
+	if commandTag.RowsAffected() > 0 {
+		return true, nil
+	}
+
+	status, err := r.GetSnapshotChunkingStatus(ctx, snapshot.Id)
+	if err != nil {
+		return false, err
+	}
+	if IsSnapshotChunkingCompletedStatus(status) {
+		return false, nil
+	}
+
+	return false, fmt.Errorf("snapshot chunking already claimed snapshot=%s status=%s", snapshot.Id, status)
+}
+
+func (r *ChunkRepo) GetSnapshotChunkingStatus(ctx context.Context, snapshotID string) (string, error) {
+	const query = `
+		SELECT status
+		FROM snapshots
+		WHERE id = $1
+	`
+
+	var status string
+	err := r.pool.QueryRow(ctx, query, snapshotID).Scan(&status)
+	if err != nil {
+		return "", fmt.Errorf("get snapshot status %s: %w", snapshotID, err)
+	}
+
+	return status, nil
+}
+
+func IsSnapshotChunkingCompletedStatus(status string) bool {
+	return status == snapshotStatusChunked
+}
+
+func (r *ChunkRepo) MarkSnapshotChunkingCompleted(ctx context.Context, snapshotID string) error {
+	const query = `
+		UPDATE snapshots
+		SET status = $2
+		WHERE id = $1
+	`
+
+	_, err := r.pool.Exec(ctx, query, snapshotID, snapshotStatusChunked)
+	if err != nil {
+		return fmt.Errorf("mark snapshot chunking completed %s: %w", snapshotID, err)
+	}
+
+	return nil
+}
+
+func (r *ChunkRepo) MarkSnapshotChunkingFailed(ctx context.Context, snapshotID string) error {
+	const query = `
+		UPDATE snapshots
+		SET status = $2
+		WHERE id = $1
+	`
+
+	_, err := r.pool.Exec(ctx, query, snapshotID, snapshotChunkingStatusFailed)
+	if err != nil {
+		return fmt.Errorf("mark snapshot chunking failed %s: %w", snapshotID, err)
+	}
+
+	return nil
+}
+
 func (r *ChunkRepo) ListChunksBySnapshotID(ctx context.Context, snapshotID string) ([]domain.Chunk, error) {
 	const query = `
 		SELECT *
@@ -219,7 +311,7 @@ func (r *ChunkRepo) DeleteChunksForFiles(ctx context.Context, fileNames []string
 			elasticsearch_status = $3,
 			pinecone_status = $4,
 			neo4j_status = $5
-		WHERE file_name = ANY($1)
+		WHERE file_path = ANY($1)
 		RETURNING chunk_id
 	`
 
@@ -283,6 +375,35 @@ func (r *ChunkRepo) ensureSchema(ctx context.Context) error {
 	)
 	if err != nil {
 		return fmt.Errorf("ensure snapshots schema: %w", err)
+	}
+
+	_, err = r.pool.Exec(
+		ctx,
+		`
+		CREATE TABLE IF NOT EXISTS snapshots (
+			id TEXT PRIMARY KEY,
+			repo_url TEXT NOT NULL,
+			branch TEXT NOT NULL DEFAULT '',
+			commit_sha TEXT NOT NULL DEFAULT '',
+			manifest_url TEXT NOT NULL,
+			change_log_url TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'created'
+		)
+		`,
+	)
+	if err != nil {
+		return fmt.Errorf("ensure snapshots schema for chunking status: %w", err)
+	}
+
+	_, err = r.pool.Exec(
+		ctx,
+		`
+		ALTER TABLE snapshots
+		ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'created'
+		`,
+	)
+	if err != nil {
+		return fmt.Errorf("ensure snapshots status column: %w", err)
 	}
 
 	return nil

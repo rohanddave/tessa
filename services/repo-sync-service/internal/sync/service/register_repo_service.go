@@ -192,6 +192,7 @@ func (s *RegisterRepoService) streamRepoFiles(jobs chan<- shareddomain.FileJob) 
 		}
 
 		jobs <- shareddomain.FileJob{
+			// here the path is the repo file path
 			Path:      repoFile.Path,
 			Size:      repoFile.Size,
 			Content:   content,

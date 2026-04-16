@@ -66,7 +66,8 @@ func (p *producer) Close() {
 }
 
 type ConsumerConfig struct {
-	GroupID string
+	GroupID           string
+	MaxPollIntervalMs int
 }
 
 type Message struct {
@@ -89,12 +90,17 @@ type consumer struct {
 func NewConsumer(config *ConsumerConfig) (Consumer, error) {
 	sharedConfig := LoadConfig()
 
-	client, err := cfkafka.NewConsumer(&cfkafka.ConfigMap{
+	configMap := &cfkafka.ConfigMap{
 		"bootstrap.servers":  sharedConfig.Brokers,
 		"group.id":           config.GroupID,
 		"auto.offset.reset":  "earliest",
 		"enable.auto.commit": false,
-	})
+	}
+	if config.MaxPollIntervalMs > 0 {
+		_ = configMap.SetKey("max.poll.interval.ms", config.MaxPollIntervalMs)
+	}
+
+	client, err := cfkafka.NewConsumer(configMap)
 	if err != nil {
 		return nil, err
 	}

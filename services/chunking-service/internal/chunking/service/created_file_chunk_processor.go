@@ -11,6 +11,7 @@ import (
 	sharedblobstore "github.com/rohandave/tessa-rag/services/shared/blobstore"
 	shareddomain "github.com/rohandave/tessa-rag/services/shared/domain"
 	sharedkafka "github.com/rohandave/tessa-rag/services/shared/kafka"
+	sharedutil "github.com/rohandave/tessa-rag/services/shared/util"
 )
 
 type CreatedFileChunkProcessor struct {
@@ -20,20 +21,22 @@ type CreatedFileChunkProcessor struct {
 	logger *log.Logger
 
 	blobStoreRepo        *sharedblobstore.Repo
-	fetchedFilesChannel  chan *shareddomain.FileJob
+	fetchFileChannel     chan *shareddomain.ChangeLogFile
+	fetchFileWG          sync.WaitGroup
 	fileFetchWorkerCount int
 
 	normalizationService     *NormalizationService
-	normalizedFilesChannel   chan *shareddomain.FileJob
+	normalizationChannel     chan *shareddomain.FileJob
 	normalizationWG          sync.WaitGroup
 	normalizationWorkerCount int
 
+	extractionChannel     chan *shareddomain.FileJob
 	extractionService     *ExtractionService
 	extractionWG          sync.WaitGroup
 	extractionWorkerCount int
 
-	chunkBuilder  *ChunkBuilder
-	chunksChannel chan *shareddomain.Chunk
+	chunkBuilder   *ChunkBuilder
+	persistChannel chan *shareddomain.Chunk
 
 	chunkRepo          *ports.ChunkRepo
 	persistWG          sync.WaitGroup
@@ -59,19 +62,21 @@ func NewCreatedFileChunkProcessor(input *CreatedFileChunkProcessorInput) *Create
 		snapshot:             input.snapshot,
 		hasStarted:           false,
 		logger:               input.logger,
-		blobStoreRepo:        input.blobStoreRepo,
-		fetchedFilesChannel:  make(chan *shareddomain.FileJob),
+		fetchFileChannel:     make(chan *shareddomain.ChangeLogFile),
 		fileFetchWorkerCount: 5,
 
+		blobStoreRepo:        input.blobStoreRepo,
+		normalizationChannel: make(chan *shareddomain.FileJob),
+
 		normalizationService:     input.normalizationService,
-		normalizedFilesChannel:   make(chan *shareddomain.FileJob),
+		extractionChannel:        make(chan *shareddomain.FileJob),
 		normalizationWorkerCount: 5,
 
 		extractionService:     input.extractionService,
 		extractionWorkerCount: 5,
 
-		chunkBuilder:  NewChunkBuilder(),
-		chunksChannel: make(chan *shareddomain.Chunk),
+		chunkBuilder:   NewChunkBuilder(),
+		persistChannel: make(chan *shareddomain.Chunk),
 
 		chunkRepo:          input.chunkRepo,
 		persistWorkerCount: 5,
@@ -81,17 +86,23 @@ func NewCreatedFileChunkProcessor(input *CreatedFileChunkProcessorInput) *Create
 	}
 }
 
-func (s *CreatedFileChunkProcessor) Run(fileURLs []string) error {
+func (s *CreatedFileChunkProcessor) Run(changeLogFiles []shareddomain.ChangeLogFile) error {
 	if s.hasStarted {
 		return fmt.Errorf("Already started")
 	}
 
-	if len(fileURLs) == 0 {
+	if len(changeLogFiles) == 0 {
 		s.logger.Printf("no created or updated files to fetch snapshot=%s; deletion-only change log handled", s.snapshot.Id)
 		return nil
 	}
 
 	s.hasStarted = true
+
+	// start file fetch workers
+	for i := 0; i < s.fileFetchWorkerCount; i++ {
+		s.fetchFileWG.Add(1)
+		go s.fetch()
+	}
 
 	// start normalization workers
 	for i := 0; i < s.normalizationWorkerCount; i++ {
@@ -99,23 +110,11 @@ func (s *CreatedFileChunkProcessor) Run(fileURLs []string) error {
 		go s.normalize()
 	}
 
-	// when normalization is fully done, close normalizedFilesChannel
-	go func() {
-		s.normalizationWG.Wait()
-		close(s.normalizedFilesChannel)
-	}()
-
 	// start extraction workers
 	for i := 0; i < s.extractionWorkerCount; i++ {
 		s.extractionWG.Add(1)
 		go s.extract()
 	}
-
-	// when extraction is fully done, close chunksChannel
-	go func() {
-		s.extractionWG.Wait()
-		close(s.chunksChannel)
-	}()
 
 	// start final persist stage
 	for i := 0; i < s.persistWorkerCount; i++ {
@@ -123,27 +122,56 @@ func (s *CreatedFileChunkProcessor) Run(fileURLs []string) error {
 		go s.persist()
 	}
 
-	if err := s.blobStoreRepo.GetFiles(fileURLs, s.fetchedFilesChannel, s.fileFetchWorkerCount); err != nil {
-		s.logger.Printf("failed while fetching files for snapshot=%s: %v", s.snapshot.Id, err)
-		close(s.fetchedFilesChannel)
-
-		s.persistWG.Wait()
-		return err
+	for i := range changeLogFiles {
+		s.fetchFileChannel <- &changeLogFiles[i]
 	}
 
-	// fetching is complete, so no more files will come in
-	close(s.fetchedFilesChannel)
+	close(s.fetchFileChannel)
+	s.fetchFileWG.Wait()
 
-	// wait for final stage to finish
+	close(s.normalizationChannel)
+	s.normalizationWG.Wait()
+
+	close(s.extractionChannel)
+	s.extractionWG.Wait()
+
+	close(s.persistChannel)
 	s.persistWG.Wait()
-
 	return nil
+}
+func (s *CreatedFileChunkProcessor) fetch() {
+	defer s.fetchFileWG.Done()
+
+	for changeLogFile := range s.fetchFileChannel {
+		blobDirectoryURL, err := sharedutil.DeriveRawStorageURL(s.snapshot.ChangeLogURL)
+		if err != nil {
+			s.logger.Printf("failed to derive blob directory from change log url for snapshot=%s: %v", s.snapshot.Id, err)
+			continue
+		}
+
+		fileJob, err := s.blobStoreRepo.GetFile(blobDirectoryURL + "/" + changeLogFile.FileHash)
+		if err != nil {
+			s.logger.Printf("failed to fetch raw file snapshot=%s path=%s hash=%s: %v", s.snapshot.Id, changeLogFile.Path, changeLogFile.FileHash, err)
+			continue
+		}
+		if fileJob == nil {
+			s.logger.Printf("skipping nil raw file snapshot=%s path=%s hash=%s", s.snapshot.Id, changeLogFile.Path, changeLogFile.FileHash)
+			continue
+		}
+
+		s.logger.Printf("fetch raw file at url=%s for file in repo at path=%s output_bytes=%d", fileJob.Path, changeLogFile.Path, fileJob.Size)
+
+		// override the path returned from blob storage since the chunk needs the repo file path not the raw storage file url
+		fileJob.Path = changeLogFile.Path
+		s.normalizationChannel <- fileJob
+	}
+
 }
 
 func (s *CreatedFileChunkProcessor) normalize() {
 	defer s.normalizationWG.Done()
 
-	for fileJob := range s.fetchedFilesChannel {
+	for fileJob := range s.normalizationChannel {
 		if fileJob == nil {
 			s.logger.Printf("skipping nil file job in normalization step")
 			continue
@@ -155,14 +183,14 @@ func (s *CreatedFileChunkProcessor) normalize() {
 		}
 
 		s.logger.Printf("normalized file path=%s output_bytes=%d", normalizedFileJob.Path, len(normalizedFileJob.Content))
-		s.normalizedFilesChannel <- normalizedFileJob
+		s.extractionChannel <- normalizedFileJob
 	}
 }
 
 func (s *CreatedFileChunkProcessor) extract() {
 	defer s.extractionWG.Done()
 
-	for fileJob := range s.normalizedFilesChannel {
+	for fileJob := range s.extractionChannel {
 		if fileJob == nil {
 			s.logger.Printf("skipping nil file job in extraction step")
 			continue
@@ -184,17 +212,15 @@ func (s *CreatedFileChunkProcessor) extract() {
 
 		s.logger.Printf("built chunks path=%s chunks=%d", fileJob.Path, len(chunks))
 		for _, chunk := range chunks {
-			s.chunksChannel <- chunk
+			s.persistChannel <- chunk
 		}
-
 	}
-
 }
 
 func (s *CreatedFileChunkProcessor) persist() {
 	defer s.persistWG.Done()
 
-	for chunk := range s.chunksChannel {
+	for chunk := range s.persistChannel {
 		err := s.chunkRepo.CreateChunk(context.Background(), chunk)
 		if err != nil {
 			s.logger.Printf("failed to write chunk to database snapshot=%s chunk_id=%s symbol=%s type=%s: %v", s.snapshot.Id, chunk.ChunkID, chunk.SymbolName, chunk.SymbolType, err)

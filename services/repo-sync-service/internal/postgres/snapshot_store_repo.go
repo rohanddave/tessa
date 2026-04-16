@@ -54,8 +54,8 @@ func (r *SnapshotStoreRepo) CreateSnapshot(snapshot *shareddomain.Snapshot) (str
 	_, err := r.pool.Exec(
 		context.Background(),
 		`
-		INSERT INTO snapshots (id, repo_url, branch, commit_sha, manifest_url, change_log_url)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO snapshots (id, repo_url, branch, commit_sha, manifest_url, change_log_url, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		`,
 		id,
 		snapshot.RepoURL,
@@ -63,6 +63,7 @@ func (r *SnapshotStoreRepo) CreateSnapshot(snapshot *shareddomain.Snapshot) (str
 		snapshot.CommitSHA,
 		snapshot.ManifestURL,
 		snapshot.ChangeLogURL,
+		defaultString(snapshot.Status, "created"),
 	)
 	if err != nil {
 		return "", fmt.Errorf("insert snapshot: %w", err)
@@ -77,7 +78,7 @@ func (r *SnapshotStoreRepo) GetSnapshot(snapshotID string) (*shareddomain.Snapsh
 	err := r.pool.QueryRow(
 		context.Background(),
 		`
-		SELECT id, repo_url, branch, commit_sha, manifest_url, change_log_url
+		SELECT id, repo_url, branch, commit_sha, manifest_url, change_log_url, status
 		FROM snapshots
 		WHERE id = $1
 		`,
@@ -89,6 +90,7 @@ func (r *SnapshotStoreRepo) GetSnapshot(snapshotID string) (*shareddomain.Snapsh
 		&snapshot.CommitSHA,
 		&snapshot.ManifestURL,
 		&snapshot.ChangeLogURL,
+		&snapshot.Status,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -107,7 +109,7 @@ func (r *SnapshotStoreRepo) GetLatestSnapshot(repoURL string) (*shareddomain.Sna
 	err := r.pool.QueryRow(
 		context.Background(),
 		`
-		SELECT id, repo_url, branch, commit_sha, manifest_url, change_log_url
+		SELECT id, repo_url, branch, commit_sha, manifest_url, change_log_url, status
 		FROM snapshots
 		WHERE repo_url = $1
 		ORDER BY id DESC
@@ -121,6 +123,7 @@ func (r *SnapshotStoreRepo) GetLatestSnapshot(repoURL string) (*shareddomain.Sna
 		&snapshot.CommitSHA,
 		&snapshot.ManifestURL,
 		&snapshot.ChangeLogURL,
+		&snapshot.Status,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -165,7 +168,8 @@ func (r *SnapshotStoreRepo) ensureSchema(ctx context.Context) error {
 			branch TEXT NOT NULL DEFAULT '',
 			commit_sha TEXT NOT NULL DEFAULT '',
 			manifest_url TEXT NOT NULL,
-			change_log_url TEXT NOT NULL DEFAULT ''
+			change_log_url TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'created'
 		)
 		`,
 	)
@@ -174,4 +178,12 @@ func (r *SnapshotStoreRepo) ensureSchema(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func defaultString(value string, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+
+	return value
 }

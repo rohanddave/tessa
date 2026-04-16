@@ -35,7 +35,7 @@ func main() {
 		service.NewNeo4jIndexer(logger, cfg.Neo4j),
 	)
 
-	createAndRunNKafkaConsumers(5, cfg.Kafka.IndexingTopic, logger, indexingService)
+	createAndRunNKafkaConsumers(20, cfg.Kafka.IndexingTopic, logger, indexingService)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
@@ -60,7 +60,7 @@ func createAndRunNKafkaConsumers(number int, topic string, logger *log.Logger, i
 			defer consumer.Close()
 
 			for {
-				message, err := consumer.ReadMessage(5 * time.Second)
+				message, err := consumer.ReadMessage(1 * time.Second)
 				if err != nil {
 					logger.Printf("consumer %d read error on topic %s: %v", workerID, topic, err)
 					continue

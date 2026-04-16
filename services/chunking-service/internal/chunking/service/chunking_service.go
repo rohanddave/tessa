@@ -1,11 +1,10 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
-	"fmt"
 	"log"
-	"net/url"
-	"path"
+	"slices"
 
 	"github.com/rohandave/tessa-rag/services/chunking-service/internal/chunking/ports"
 	sharedblobstore "github.com/rohandave/tessa-rag/services/shared/blobstore"
@@ -48,12 +47,31 @@ func NewChunkingService(input *ChunkingServiceInput) *ChunkingService {
 		extractionService:        input.ExtractionService,
 		normalizationWorkerCount: 5,
 		extractionWorkerCount:    5,
-		fileFetchWorkerCount:     5,
+		fileFetchWorkerCount:     20,
 	}
 }
 
-func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) error {
+func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) (err error) {
 	s.logger.Printf("starting chunking pipeline for snapshot=%s repo=%s changelog=%s", snapshot.Id, snapshot.RepoURL, snapshot.ChangeLogURL)
+
+	ctx := context.Background()
+	claimed, err := s.chunkRepo.TryStartSnapshotChunking(ctx, &snapshot)
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		s.logger.Printf("skipping snapshot chunking because job already completed snapshot=%s repo=%s", snapshot.Id, snapshot.RepoURL)
+		return nil
+	}
+
+	defer func() {
+		if err == nil {
+			return
+		}
+		if markErr := s.chunkRepo.MarkSnapshotChunkingFailed(context.Background(), snapshot.Id); markErr != nil {
+			s.logger.Printf("failed to mark snapshot chunking failed snapshot=%s: %v", snapshot.Id, markErr)
+		}
+	}()
 
 	changeLogFile, err := s.blobStoreRepo.GetFile(snapshot.ChangeLogURL)
 	if err != nil {
@@ -74,34 +92,27 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) error {
 	s.logger.Printf("decoded change log for snapshot=%s repo=%s branch=%s commit=%s", snapshot.Id, changeLogFileContent.RepoURL, changeLogFileContent.Branch, changeLogFileContent.CommitSHA)
 	s.logger.Printf("change log file counts snapshot=%s created=%d updated=%d deleted=%d", snapshot.Id, createdCount, updatedCount, deletedCount)
 
-	blobDirectoryURL, err := deriveDirectoryURL(snapshot.ChangeLogURL)
-	if err != nil {
-		s.logger.Printf("failed to derive blob directory from change log url for snapshot=%s: %v", snapshot.Id, err)
-		return err
+	changeLogFileContent.Created = slices.Grow(changeLogFileContent.Created, updatedCount)
+	changeLogFileContent.Deleted = slices.Grow(changeLogFileContent.Deleted, updatedCount)
+
+	for i := range changeLogFileContent.Updated {
+		u := changeLogFileContent.Updated[i]
+		changeLogFileContent.Created = append(changeLogFileContent.Created, shareddomain.ChangeLogFile{
+			Path:          u.Path,
+			FileHash:      u.NewFileHash,
+			FileSize:      u.NewFileSize,
+			FileExtension: u.FileExtension,
+		})
+
+		changeLogFileContent.Deleted = append(changeLogFileContent.Deleted, shareddomain.ChangeLogFile{
+			Path:          u.Path,
+			FileHash:      u.OldFileHash,
+			FileSize:      u.OldFileSize,
+			FileExtension: u.FileExtension,
+		})
 	}
 
-	deletedFileNames := make([]string, 0, len(changeLogFileContent.Deleted)+len(changeLogFileContent.Updated))
-	createdFileURLs := make([]string, 0, len(changeLogFileContent.Created)+len(changeLogFileContent.Updated))
-
-	for _, file := range changeLogFileContent.Deleted {
-		s.logger.Printf("queued deleted file for chunk deletion snapshot=%s path=%s hash=%s size=%d", snapshot.Id, file.Path, file.FileHash, file.FileSize)
-		deletedFileNames = append(deletedFileNames, file.FileHash)
-	}
-
-	for _, file := range changeLogFileContent.Updated {
-		fileURL := blobDirectoryURL + "/" + file.NewFileHash
-		s.logger.Printf("queued updated file for replacement snapshot=%s path=%s old_hash=%s new_hash=%s url=%s new_size=%d", snapshot.Id, file.Path, file.OldFileHash, file.NewFileHash, fileURL, file.NewFileSize)
-		deletedFileNames = append(deletedFileNames, file.OldFileHash)
-		createdFileURLs = append(createdFileURLs, fileURL)
-	}
-
-	for _, file := range changeLogFileContent.Created {
-		fileURL := blobDirectoryURL + "/" + file.FileHash
-		s.logger.Printf("queued file for fetching snapshot=%s path=%s hash=%s url=%s size=%d", snapshot.Id, file.Path, file.FileHash, fileURL, file.FileSize)
-		createdFileURLs = append(createdFileURLs, fileURL)
-	}
-
-	s.logger.Printf("prepared chunking work snapshot=%s files_to_fetch=%d chunks_to_delete_for_files=%d", snapshot.Id, len(createdFileURLs), len(deletedFileNames))
+	changeLogFileContent.Updated = nil
 
 	err = NewDeletedFileChunkProcessor(&DeletedFileChunkProcessorInput{
 		snapshot:           &snapshot,
@@ -109,7 +120,11 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) error {
 		chunkRepo:          s.chunkRepo,
 		kafkaProducer:      s.kafkaProducer,
 		kafkaIndexingTopic: s.indexingTopic,
-	}).Run(deletedFileNames)
+	}).Run(changeLogFileContent.Deleted)
+	if err != nil {
+		s.logger.Printf("error deleting files snapshot=%s: %v", snapshot.Id, err)
+		return err
+	}
 
 	err = NewCreatedFileChunkProcessor(&CreatedFileChunkProcessorInput{
 		snapshot:             &snapshot,
@@ -120,22 +135,17 @@ func (s *ChunkingService) Start(snapshot shareddomain.Snapshot) error {
 		chunkRepo:            s.chunkRepo,
 		kafkaProducer:        s.kafkaProducer,
 		kafkaIndexingTopic:   s.indexingTopic,
-	}).Run(createdFileURLs)
-
-	return nil
-}
-
-func deriveDirectoryURL(fileURL string) (string, error) {
-	parsedURL, err := url.Parse(fileURL)
+	}).Run(changeLogFileContent.Created)
 	if err != nil {
-		return "", fmt.Errorf("parse file url %q: %w", fileURL, err)
+		s.logger.Printf("error creating files snapshot=%s: %v", snapshot.Id, err)
+		return err
 	}
 
-	dirPath := path.Dir(parsedURL.Path)
-	if dirPath == "." || dirPath == "/" {
-		return "", fmt.Errorf("file url %q does not contain a directory path", fileURL)
+	if err = s.chunkRepo.MarkSnapshotChunkingCompleted(ctx, snapshot.Id); err != nil {
+		s.logger.Printf("error marking snapshot with id=%s as completed: %v", snapshot.Id, err)
+		return err
 	}
 
-	parsedURL.Path = dirPath
-	return parsedURL.String(), nil
+	s.logger.Printf("successfully completed chunking snapshot with id=%s", snapshot.Id)
+	return nil
 }
