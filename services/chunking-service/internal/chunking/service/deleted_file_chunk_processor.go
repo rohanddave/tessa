@@ -48,19 +48,21 @@ func (s *DeletedFileChunkProcessor) Run(changeLogFiles []shareddomain.ChangeLogF
 		return nil
 	}
 
-	rawStorageFileNames := make([]string, 0, len(changeLogFiles))
+	filePaths := make([]string, 0, len(changeLogFiles))
 
 	for _, file := range changeLogFiles {
 		s.logger.Printf("queued deleted file for chunk deletion snapshot=%s path=%s hash=%s size=%d", s.snapshot.Id, file.Path, file.FileHash, file.FileSize)
-		rawStorageFileNames = append(rawStorageFileNames, file.FileHash)
+		filePaths = append(filePaths, file.Path)
 	}
 
-	deletedChunkIDs, err := s.chunkRepo.DeleteChunksForFiles(context.Background(), rawStorageFileNames)
+	deletedChunkIDs, err := s.chunkRepo.DeleteChunksForFiles(context.Background(), filePaths)
 	if err != nil {
-		s.logger.Printf("failed to delete chunks snapshot=%s file_hashes=%d: %v", s.snapshot.Id, len(rawStorageFileNames), err)
+		s.logger.Printf("failed to delete chunks snapshot=%s file_hashes=%d: %v", s.snapshot.Id, len(filePaths), err)
 		return err
 	}
-	s.logger.Printf("marked existing chunks pending delete snapshot=%s file_hashes=%d chunks=%d", s.snapshot.Id, len(rawStorageFileNames), len(deletedChunkIDs))
+
+	// TODO: check if chunks were correctly deleted; there could be a case where DeleteChunksForFiles does not return an error but does not find any chunks to delete - we should either log this or have some sort of check
+	s.logger.Printf("marked existing chunks pending delete snapshot=%s file_hashes=%d chunks=%d", s.snapshot.Id, len(filePaths), len(deletedChunkIDs))
 	for _, chunkID := range deletedChunkIDs {
 		event := shareddomain.ChunkIndexingEvent{
 			EventType:  shareddomain.ChunkDeleteRequestedEvent,

@@ -14,13 +14,13 @@ type ChunkRepo struct {
 }
 
 const (
-	defaultChunkStatus         = "pending_index"
-	defaultTargetIndexStatus   = "pending"
-	defaultTargetDeleteStatus  = "pending_delete"
-	chunkStatusPendingDelete   = "pending_delete"
-	snapshotStatusCreated      = "created"
-	snapshotStatusChunking     = "chunking"
-	snapshotStatusChunked      = "chunked"
+	defaultChunkStatus           = "pending_index"
+	defaultTargetIndexStatus     = "pending"
+	defaultTargetDeleteStatus    = "pending_delete"
+	chunkStatusPendingDelete     = "pending_delete"
+	snapshotStatusCreated        = "created"
+	snapshotStatusChunking       = "chunking"
+	snapshotStatusChunked        = "chunked"
 	snapshotChunkingStatusFailed = "chunking_failed"
 )
 
@@ -311,7 +311,7 @@ func (r *ChunkRepo) DeleteChunksForFiles(ctx context.Context, fileNames []string
 			elasticsearch_status = $3,
 			pinecone_status = $4,
 			neo4j_status = $5
-		WHERE file_name = ANY($1)
+		WHERE file_path = ANY($1)
 		RETURNING chunk_id
 	`
 
