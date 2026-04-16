@@ -104,35 +104,17 @@ func (s *CreatedFileChunkProcessor) Run(changeLogFiles []shareddomain.ChangeLogF
 		go s.fetch()
 	}
 
-	// when fetching is fully done, close fetchFileChannel
-	go func() {
-		s.fetchFileWG.Wait()
-		close(s.fetchFileChannel)
-	}()
-
 	// start normalization workers
 	for i := 0; i < s.normalizationWorkerCount; i++ {
 		s.normalizationWG.Add(1)
 		go s.normalize()
 	}
 
-	// when normalization is fully done, close normalizationChannel
-	go func() {
-		s.normalizationWG.Wait()
-		close(s.normalizationChannel)
-	}()
-
 	// start extraction workers
 	for i := 0; i < s.extractionWorkerCount; i++ {
 		s.extractionWG.Add(1)
 		go s.extract()
 	}
-
-	// when extraction is fully done, close extractionChannel
-	go func() {
-		s.extractionWG.Wait()
-		close(s.extractionChannel)
-	}()
 
 	// start final persist stage
 	for i := 0; i < s.persistWorkerCount; i++ {
@@ -144,9 +126,17 @@ func (s *CreatedFileChunkProcessor) Run(changeLogFiles []shareddomain.ChangeLogF
 		s.fetchFileChannel <- &changeLogFiles[i]
 	}
 
-	// wait for final step to complete
-	s.persistWG.Wait()
+	close(s.fetchFileChannel)
+	s.fetchFileWG.Wait()
+
+	close(s.normalizationChannel)
+	s.normalizationWG.Wait()
+
+	close(s.extractionChannel)
+	s.extractionWG.Wait()
+
 	close(s.persistChannel)
+	s.persistWG.Wait()
 	return nil
 }
 func (s *CreatedFileChunkProcessor) fetch() {
@@ -160,6 +150,14 @@ func (s *CreatedFileChunkProcessor) fetch() {
 		}
 
 		fileJob, err := s.blobStoreRepo.GetFile(blobDirectoryURL + "/" + changeLogFile.FileHash)
+		if err != nil {
+			s.logger.Printf("failed to fetch raw file snapshot=%s path=%s hash=%s: %v", s.snapshot.Id, changeLogFile.Path, changeLogFile.FileHash, err)
+			continue
+		}
+		if fileJob == nil {
+			s.logger.Printf("skipping nil raw file snapshot=%s path=%s hash=%s", s.snapshot.Id, changeLogFile.Path, changeLogFile.FileHash)
+			continue
+		}
 
 		s.logger.Printf("fetch raw file at url=%s for file in repo at path=%s output_bytes=%d", fileJob.Path, changeLogFile.Path, fileJob.Size)
 
