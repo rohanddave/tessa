@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import logging
+
 from app.models.query import QueryRequest
 from app.models.retrieval import RetrievalHit
-from app.stores.elasticsearch import ElasticsearchStore
+from app.stores.postgres import PostgresStore
 
 
 class ContextExpansionService:
-    def __init__(self, elasticsearch: ElasticsearchStore) -> None:
-        self.elasticsearch = elasticsearch
+    def __init__(self, postgres: PostgresStore, logger: logging.Logger | None = None) -> None:
+        self.postgres = postgres
+        self.logger = logger or logging.getLogger(__name__)
 
     async def expand(self, request: QueryRequest, hits: list[RetrievalHit]) -> list[RetrievalHit]:
         neighbor_ids = []
@@ -17,9 +20,21 @@ class ContextExpansionService:
                 if chunk_id and chunk_id not in existing_ids:
                     neighbor_ids.append(chunk_id)
 
-        neighbors = await self.elasticsearch.mget(neighbor_ids)
+        self.logger.info(
+            "context expansion fetching neighbors base_hits=%d neighbor_ids=%d",
+            len(hits),
+            len(neighbor_ids),
+        )
+        neighbors = await self.postgres.mget_chunks(neighbor_ids, source="context_expansion")
         allowed = self._filter_to_request_scope(request, neighbors)
-        return self._merge_preserving_primary_order(hits, allowed)
+        merged = self._merge_preserving_primary_order(hits, allowed)
+        self.logger.info(
+            "context expansion merged fetched_neighbors=%d scoped_neighbors=%d merged_hits=%d",
+            len(neighbors),
+            len(allowed),
+            len(merged),
+        )
+        return merged
 
     def _filter_to_request_scope(self, request: QueryRequest, hits: list[RetrievalHit]) -> list[RetrievalHit]:
         scoped: list[RetrievalHit] = []

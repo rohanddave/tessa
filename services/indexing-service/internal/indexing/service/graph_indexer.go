@@ -7,6 +7,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rohandave/tessa-rag/services/indexing-service/internal/config"
 	"github.com/rohandave/tessa-rag/services/shared/domain"
@@ -48,6 +49,20 @@ func (i *Neo4jIndexer) IndexChunk(ctx context.Context, chunk *domain.Chunk) erro
 		return err
 	}
 
+	started := time.Now()
+	i.logger.Printf(
+		"neo4j index started chunk_id=%s repo=%s branch=%s snapshot=%s file=%s symbol=%s type=%s prev=%t next=%t",
+		chunk.ChunkID,
+		chunk.RepoURL,
+		chunk.Branch,
+		chunk.SnapshotID,
+		chunk.FilePath,
+		chunk.SymbolName,
+		chunk.SymbolType,
+		chunk.PrevChunkID != "",
+		chunk.NextChunkID != "",
+	)
+
 	session := i.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
 	defer func() {
 		if err := session.Close(ctx); err != nil {
@@ -55,61 +70,79 @@ func (i *Neo4jIndexer) IndexChunk(ctx context.Context, chunk *domain.Chunk) erro
 		}
 	}()
 
-	_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+	result, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		stats := &graphWriteStats{}
 		params := chunkParams(chunk)
-		if err := runNeo4j(ctx, tx, upsertChunkQuery, params); err != nil {
+		if err := runNeo4j(ctx, tx, upsertChunkQuery, params, stats); err != nil {
 			return nil, err
 		}
-		if err := runNeo4j(ctx, tx, upsertFileContainmentQuery, params); err != nil {
+		if err := runNeo4j(ctx, tx, upsertFileContainmentQuery, params, stats); err != nil {
 			return nil, err
 		}
 		if chunk.PrevChunkID != "" {
-			if err := runNeo4j(ctx, tx, linkPrevChunkQuery, params); err != nil {
+			if err := runNeo4j(ctx, tx, linkPrevChunkQuery, params, stats); err != nil {
 				return nil, err
 			}
 		}
 		if chunk.NextChunkID != "" {
-			if err := runNeo4j(ctx, tx, linkNextChunkQuery, params); err != nil {
+			if err := runNeo4j(ctx, tx, linkNextChunkQuery, params, stats); err != nil {
 				return nil, err
 			}
 		}
 		if isImportChunk(chunk.SymbolType) {
 			params["import_candidates"] = importResolutionCandidates(chunk.FilePath, chunk.SymbolName, chunk.Language)
-			if err := runNeo4j(ctx, tx, linkImportQuery, params); err != nil {
+			i.logger.Printf("neo4j import resolution candidates chunk_id=%s candidates=%d", chunk.ChunkID, len(params["import_candidates"].([]string)))
+			if err := runNeo4j(ctx, tx, linkImportQuery, params, stats); err != nil {
 				return nil, err
 			}
 		}
 		if isClassChunk(chunk.SymbolType) {
-			if err := runNeo4j(ctx, tx, linkClassToExistingMethodsQuery, params); err != nil {
+			if err := runNeo4j(ctx, tx, linkClassToExistingMethodsQuery, params, stats); err != nil {
 				return nil, err
 			}
 		}
 		if isMethodChunk(chunk.SymbolType) {
-			if err := runNeo4j(ctx, tx, linkMethodToExistingClassQuery, params); err != nil {
+			if err := runNeo4j(ctx, tx, linkMethodToExistingClassQuery, params, stats); err != nil {
 				return nil, err
 			}
 		}
 		if isDocCommentChunk(chunk.SymbolType) {
-			if err := runNeo4j(ctx, tx, linkDocToNearestDeclarationQuery, params); err != nil {
+			if err := runNeo4j(ctx, tx, linkDocToNearestDeclarationQuery, params, stats); err != nil {
 				return nil, err
 			}
 		}
 		if isDeclarationChunk(chunk.SymbolType) {
-			if err := runNeo4j(ctx, tx, linkNearestDocToDeclarationQuery, params); err != nil {
+			if err := runNeo4j(ctx, tx, linkNearestDocToDeclarationQuery, params, stats); err != nil {
 				return nil, err
 			}
-			if err := runNeo4j(ctx, tx, linkAliasChunksQuery, params); err != nil {
+			if err := runNeo4j(ctx, tx, linkAliasChunksQuery, params, stats); err != nil {
 				return nil, err
 			}
 		}
 
-		return nil, nil
+		return stats, nil
 	})
 	if err != nil {
 		return fmt.Errorf("index neo4j chunk %s: %w", chunk.ChunkID, err)
 	}
 
-	i.logger.Printf("indexed chunk in neo4j uri=%s chunk_id=%s file=%s symbol=%s type=%s", i.config.URI, chunk.ChunkID, chunk.FilePath, chunk.SymbolName, chunk.SymbolType)
+	stats, _ := result.(*graphWriteStats)
+	if stats == nil {
+		stats = &graphWriteStats{}
+	}
+	i.logger.Printf(
+		"neo4j index completed uri=%s chunk_id=%s file=%s symbol=%s type=%s nodes_created=%d relationships_created=%d properties_set=%d labels_added=%d duration_ms=%d",
+		i.config.URI,
+		chunk.ChunkID,
+		chunk.FilePath,
+		chunk.SymbolName,
+		chunk.SymbolType,
+		stats.nodesCreated,
+		stats.relationshipsCreated,
+		stats.propertiesSet,
+		stats.labelsAdded,
+		time.Since(started).Milliseconds(),
+	)
 	return nil
 }
 
@@ -125,14 +158,27 @@ func (i *Neo4jIndexer) DeleteChunk(ctx context.Context, chunkID string) error {
 		}
 	}()
 
-	_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
-		return nil, runNeo4j(ctx, tx, deleteChunkQuery, map[string]any{"chunk_id": chunkID})
+	started := time.Now()
+	result, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		stats := &graphWriteStats{}
+		return stats, runNeo4j(ctx, tx, deleteChunkQuery, map[string]any{"chunk_id": chunkID}, stats)
 	})
 	if err != nil {
 		return fmt.Errorf("delete neo4j chunk %s: %w", chunkID, err)
 	}
 
-	i.logger.Printf("deleted chunk from neo4j uri=%s chunk_id=%s", i.config.URI, chunkID)
+	stats, _ := result.(*graphWriteStats)
+	if stats == nil {
+		stats = &graphWriteStats{}
+	}
+	i.logger.Printf(
+		"deleted chunk from neo4j uri=%s chunk_id=%s nodes_deleted=%d relationships_deleted=%d duration_ms=%d",
+		i.config.URI,
+		chunkID,
+		stats.nodesDeleted,
+		stats.relationshipsDeleted,
+		time.Since(started).Milliseconds(),
+	)
 	return nil
 }
 
@@ -158,7 +204,7 @@ func (i *Neo4jIndexer) ensureReady(ctx context.Context) error {
 	}()
 
 	_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
-		if err := runNeo4j(ctx, tx, createChunkIDConstraintQuery, nil); err != nil {
+		if err := runNeo4j(ctx, tx, createChunkIDConstraintQuery, nil, nil); err != nil {
 			return nil, err
 		}
 		return nil, nil
@@ -171,13 +217,41 @@ func (i *Neo4jIndexer) ensureReady(ctx context.Context) error {
 	return nil
 }
 
-func runNeo4j(ctx context.Context, tx neo4j.ManagedTransaction, cypher string, params map[string]any) error {
+func runNeo4j(ctx context.Context, tx neo4j.ManagedTransaction, cypher string, params map[string]any, stats *graphWriteStats) error {
 	result, err := tx.Run(ctx, cypher, params)
 	if err != nil {
 		return err
 	}
-	_, err = result.Consume(ctx)
-	return err
+	summary, err := result.Consume(ctx)
+	if err != nil {
+		return err
+	}
+	if stats != nil {
+		stats.add(summary)
+	}
+	return nil
+}
+
+type graphWriteStats struct {
+	nodesCreated         int
+	nodesDeleted         int
+	relationshipsCreated int
+	relationshipsDeleted int
+	propertiesSet        int
+	labelsAdded          int
+}
+
+func (s *graphWriteStats) add(summary neo4j.ResultSummary) {
+	if summary == nil {
+		return
+	}
+	counters := summary.Counters()
+	s.nodesCreated += counters.NodesCreated()
+	s.nodesDeleted += counters.NodesDeleted()
+	s.relationshipsCreated += counters.RelationshipsCreated()
+	s.relationshipsDeleted += counters.RelationshipsDeleted()
+	s.propertiesSet += counters.PropertiesSet()
+	s.labelsAdded += counters.LabelsAdded()
 }
 
 func chunkParams(chunk *domain.Chunk) map[string]any {

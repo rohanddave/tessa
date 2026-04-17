@@ -9,7 +9,7 @@ class QueryUnderstandingService:
         intent = self._classify_intent(query)
 
         plan = ["keyword", "vector"]
-        if any(word in query.lower() for word in ["call", "calls", "import", "dependency", "depends"]):
+        if entities or any(word in query.lower() for word in ["call", "calls", "import", "dependency", "depends"]):
             plan.append("graph")
 
         return QueryUnderstanding(intent=intent, entities=entities, retrieval_plan=plan)

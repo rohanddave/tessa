@@ -4,10 +4,12 @@ from app.models.chunk import retrieval_hit_from_chunk
 from app.models.query import QueryRequest
 from app.models.retrieval import RetrievalHit
 from app.retrieval.context_expansion import ContextExpansionService
+from app.retrieval.fusion import FusionRanker
+from app.retrieval.retrievers.graph import GraphRetriever
 
 
-class FakeElasticsearch:
-    async def mget(self, chunk_ids: list[str], *, source: str = "context_expansion") -> list[RetrievalHit]:
+class FakePostgresForExpansion:
+    async def mget_chunks(self, chunk_ids: list[str], *, source: str = "context_expansion") -> list[RetrievalHit]:
         chunks = {
             "prev": RetrievalHit(
                 chunk_id="prev",
@@ -64,8 +66,32 @@ def test_context_expansion_includes_neighbor_chunks() -> None:
     assert [hit.chunk_id for hit in expanded] == ["prev", "current", "next"]
 
 
+def test_graph_retriever_hydrates_chunk_content() -> None:
+    hits = asyncio.run(retrieve_graph_hits())
+
+    assert [hit.chunk_id for hit in hits] == ["graph-1"]
+    assert hits[0].content == "hydrated content"
+    assert hits[0].score == 0.9
+    assert hits[0].sources == ["graph"]
+
+
+def test_fusion_merges_content_from_later_duplicate_hit() -> None:
+    fused = FusionRanker().fuse(
+        [
+            [RetrievalHit(chunk_id="same", score=0.9, sources=["graph"])],
+            [RetrievalHit(chunk_id="same", content="full text", score=0.5, sources=["keyword"])],
+        ],
+        limit=5,
+    )
+
+    assert len(fused) == 1
+    assert fused[0].content == "full text"
+    assert fused[0].score == 0.9
+    assert fused[0].sources == ["graph", "keyword"]
+
+
 async def expand_context() -> list[RetrievalHit]:
-    service = ContextExpansionService(FakeElasticsearch())  # type: ignore[arg-type]
+    service = ContextExpansionService(FakePostgresForExpansion())  # type: ignore[arg-type]
     request = QueryRequest(query="explain answer", repo_url="repo", branch="main", snapshot_id="snap")
 
     return await service.expand(
@@ -82,3 +108,44 @@ async def expand_context() -> list[RetrievalHit]:
             )
         ],
     )
+
+
+async def retrieve_graph_hits() -> list[RetrievalHit]:
+    request = QueryRequest(query="where is `InvoiceService` used?", repo_url="repo", branch="main", snapshot_id="snap")
+    retriever = GraphRetriever(FakeNeo4j(), FakePostgres())  # type: ignore[arg-type]
+    return await retriever.retrieve(
+        request,
+        understanding=type("Understanding", (), {"entities": ["InvoiceService"]})(),
+    )
+
+
+class FakeNeo4j:
+    async def search(self, request: QueryRequest, entities: list[str], *, top_k: int) -> list[RetrievalHit]:
+        assert entities == ["InvoiceService"]
+        return [
+            RetrievalHit(
+                chunk_id="graph-1",
+                repo_url="repo",
+                branch="main",
+                snapshot_id="snap",
+                score=0.9,
+                sources=["graph"],
+            )
+        ]
+
+
+class FakePostgres:
+    async def mget_chunks(self, chunk_ids: list[str], *, source: str = "postgres") -> list[RetrievalHit]:
+        assert chunk_ids == ["graph-1"]
+        assert source == "graph"
+        return [
+            RetrievalHit(
+                chunk_id="graph-1",
+                repo_url="repo",
+                branch="main",
+                snapshot_id="snap",
+                content="hydrated content",
+                score=0,
+                sources=[source],
+            )
+        ]
