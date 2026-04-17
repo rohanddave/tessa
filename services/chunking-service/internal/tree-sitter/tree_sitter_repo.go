@@ -10,6 +10,7 @@ import (
 
 	"github.com/rohandave/tessa-rag/services/chunking-service/internal/chunking/ports"
 	sitter "github.com/smacker/go-tree-sitter"
+	tscpp "github.com/smacker/go-tree-sitter/cpp"
 	tsgo "github.com/smacker/go-tree-sitter/golang"
 	tsjava "github.com/smacker/go-tree-sitter/java"
 	tsjavascript "github.com/smacker/go-tree-sitter/javascript"
@@ -329,9 +330,11 @@ func (r *TreeSitterRepo) extractDocComments(matches []queryMatch, source []byte)
 }
 
 func (r *TreeSitterRepo) resolveLanguage(language string) (resolvedLanguage, error) {
-	switch strings.ToLower(strings.TrimSpace(language)) {
+	switch strings.ToLower(strings.TrimPrefix(strings.TrimSpace(language), ".")) {
 	case "go", "golang":
 		return resolvedLanguage{name: "go", language: tsgo.GetLanguage()}, nil
+	case "c", "cc", "cpp", "cxx", "c++", "h", "hh", "hpp", "hxx":
+		return resolvedLanguage{name: "cpp", language: tscpp.GetLanguage()}, nil
 	case "javascript", "js", "jsx":
 		return resolvedLanguage{name: "javascript", language: tsjavascript.GetLanguage()}, nil
 	case "typescript", "ts", "tsx":

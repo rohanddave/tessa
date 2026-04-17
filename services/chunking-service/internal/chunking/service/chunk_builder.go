@@ -139,6 +139,8 @@ func (b *ChunkBuilder) normalizeLanguage(extension string) string {
 	switch strings.ToLower(strings.TrimPrefix(extension, ".")) {
 	case "go":
 		return "go"
+	case "c", "cc", "cpp", "cxx", "c++", "h", "hh", "hpp", "hxx":
+		return "cpp"
 	case "js":
 		return "javascript"
 	case "jsx":

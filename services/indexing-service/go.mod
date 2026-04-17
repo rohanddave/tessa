@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/confluentinc/confluent-kafka-go/v2 v2.13.3
 	github.com/jackc/pgx/v5 v5.9.1
+	github.com/neo4j/neo4j-go-driver/v5 v5.28.4
 	github.com/rohandave/tessa-rag/services/shared v0.0.0
 )
 
@@ -15,6 +16,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	golang.org/x/crypto v0.46.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
+	golang.org/x/term v0.38.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
 )
 
