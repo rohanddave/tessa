@@ -1,26 +1,14 @@
 from __future__ import annotations
 
-import logging
-
 from fastapi import Depends, FastAPI
 
-from app.answering import LLMAnsweringService
-from app.answering.llm_client import LLMClient
 from app.config import Settings, get_settings
-from app.context import ContextAssemblyService
 from app.models.answer import AnswerRequest, AnswerResponse, Mode
 from app.models.query import QueryRequest
 from app.models.retrieval import RetrievalResponse
-from app.retrieval.context_expansion import ContextExpansionService
-from app.retrieval.retrievers import GraphRetriever, KeywordRetriever, VectorRetriever
-from app.retrieval import RetrievalOrchestrator
-from app.stores.elasticsearch import ElasticsearchStore
-from app.stores.neo4j import Neo4jStore
-from app.stores.openai import OpenAIEmbeddingStore
-from app.stores.pinecone import PineconeStore
-from app.stores.postgres import PostgresStore
 from app.answering.baseline_strategy import BaselineRAGStrategy
 from app.answering.reasoning_strategy import ReasoningRAGStrategy
+from app.answering.agentic_strategy import AgenticRAGStrategy 
 
 def build_app() -> FastAPI:
     app = FastAPI(title="Tessa Query Service", version="0.1.0")
@@ -49,7 +37,9 @@ def build_app() -> FastAPI:
             return await services.reasoning_strategy.answer(request)
 
         if request.mode == Mode.AGENTIC:
-            return NotImplementedError
+            return await services.agentic_strategy.answer(request)
+        
+        return NotImplementedError
 
     return app
 
@@ -58,25 +48,8 @@ class QueryServices:
     def __init__(self, settings: Settings) -> None:
         self.baseline_strategy = BaselineRAGStrategy(settings)
         self.reasoning_strategy = ReasoningRAGStrategy(settings)
-        # logger = logging.getLogger(settings.service_name)
-        # elasticsearch = ElasticsearchStore(settings)
-        # neo4j = Neo4jStore(settings)
-        # postgres = PostgresStore(settings)
-        # pinecone = PineconeStore(settings)
-        # embeddings = OpenAIEmbeddingStore(settings)
-
-        # self.retrieval = RetrievalOrchestrator(
-        #     logger=logger,
-        #     retrievers=[
-        #         KeywordRetriever(elasticsearch),
-        #         VectorRetriever(embeddings, pinecone),
-        #         GraphRetriever(neo4j, postgres, logger),
-        #     ],
-        #     context_expansion=ContextExpansionService(postgres, logger),
-        # )
-        # self.context_assembly = ContextAssemblyService(logger)
-        # self.answering = LLMAnsweringService(LLMClient(settings))
-
+        self.agentic_strategy = AgenticRAGStrategy(settings)
+        self.retrieval = self.baseline_strategy.retrieval
 
 def get_query_services(settings: Settings = Depends(get_settings)) -> QueryServices:
     return QueryServices(settings)
