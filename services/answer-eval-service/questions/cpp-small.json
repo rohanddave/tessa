@@ -5,7 +5,7 @@
   },
   {
     "id": "q2_definition_usage",
-    "query": "Where is `ConnectionPool` defined, and where is it used?"
+    "query": "Where is `DriverStub` defined, and where is it used?"
   },
   {
     "id": "q3_build_targets",
@@ -13,7 +13,7 @@
   },
   {
     "id": "q4_request_flow",
-    "query": "How does a request flow from socket read to response write?"
+    "query": "Explain the rider request flow end to end?"
   },
   {
     "id": "q5_shutdown",
@@ -21,7 +21,7 @@
   },
   {
     "id": "q6_deadlock",
-    "query": "What could cause a deadlock in the worker thread pool?"
+    "query": "What could cause a deadlock?"
   },
   {
     "id": "q7_ownership",
