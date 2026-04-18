@@ -14,9 +14,8 @@ from app.context import ContextAssemblyService
 from app.answering.llm_client import LLMClient
 from app.answering import LLMAnsweringService
 from app.retrieval.query_understanding import LLMQueryUnderstandingService
-from app.models.retrieval import QueryUnderstanding
+from app.models.retrieval import QueryUnderstanding, RetrievalResult
 import json
-from typing import Any
 
 class ReasoningRAGStrategy(AnsweringStrategy): 
     def __init__(self, settings: Settings) -> None: 
@@ -43,8 +42,24 @@ class ReasoningRAGStrategy(AnsweringStrategy):
         self.answering_service = LLMAnsweringService(self.llm_client)
       
     async def answer(self, request: AnswerRequest): 
-        initial_query_understanding = self.query_understanding.understand(request.query)
+        initial_query_understanding = await self.query_understanding.understand(request.query)
         subqueries = await self._generate_subqueries(request.query, initial_query_understanding)
+
+        self.retrieval.chunks = []
+        self.retrieval.fused_chunks = []
+        self.retrieval.expanded_chunks = []
+        for subquery in subqueries: 
+            subquery_understanding = await self.query_understanding.understand(subquery)
+            subquery_request = request.model_copy(update={"query": subquery})
+            await self.retrieval.retreive(subquery_request, subquery_understanding)
+        self.retrieval.fuse(request.top_k * len(subqueries))
+        expanded_hits = await self.retrieval.expand(request)
+        retrieval_result = RetrievalResult(
+            understanding=initial_query_understanding,
+            hits=expanded_hits,
+        )
+        assembled_context = await self.context_assembly.assemble(request, retrieval_result)
+        return await self.answering_service.answer(assembled_context) 
 
     
     async def _generate_subqueries(
@@ -94,19 +109,20 @@ class ReasoningRAGStrategy(AnsweringStrategy):
     ---
 
     Query:
-    {query}
+    __QUERY__
 
     Intent:
-    {intent}
+    __INTENT__
 
     Entities:
-    {entities}
+    __ENTITIES__
 
     Return JSON only.
-    """.strip().format(
-            query=query,
-            intent=intent,
-            entities=json.dumps(entities),
+    """.strip()
+        prompt = (
+            prompt.replace("__QUERY__", query)
+            .replace("__INTENT__", intent)
+            .replace("__ENTITIES__", json.dumps(entities))
         )
 
         try:

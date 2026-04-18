@@ -112,8 +112,8 @@ Output:
 Now analyze the following user query and return JSON only.
 
 User query:
-{query}
-""".strip().format(query=query)
+__QUERY__
+""".strip().replace("__QUERY__", query)
 
         try:
             response = await self.llm_client.complete(prompt)
@@ -125,7 +125,7 @@ User query:
                 retrieval_plan=data.get("retrieval_plan", ["keyword", "vector"]),
             )
         except Exception:
-            return self.fallback_service.understand(query)
+            return await self.fallback_service.understand(query)
 
     def _extract_json(self, text: str) -> str:
         text = text.strip()

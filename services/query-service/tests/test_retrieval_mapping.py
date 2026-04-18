@@ -1,10 +1,12 @@
 import asyncio
+import logging
 
 from app.models.chunk import retrieval_hit_from_chunk
 from app.models.query import QueryRequest
-from app.models.retrieval import RetrievalHit
+from app.models.retrieval import QueryUnderstanding, RetrievalHit
 from app.retrieval.context_expansion import ContextExpansionService
 from app.retrieval.fusion import FusionRanker
+from app.retrieval.orchestrator import RetrievalOrchestrator
 from app.retrieval.retrievers.graph import GraphRetriever
 
 
@@ -90,6 +92,12 @@ def test_fusion_merges_content_from_later_duplicate_hit() -> None:
     assert fused[0].sources == ["graph", "keyword"]
 
 
+def test_retrieval_orchestrator_stores_and_reuses_stateful_chunks() -> None:
+    result = asyncio.run(orchestrate_stateful_retrieval())
+
+    assert [hit.chunk_id for hit in result.hits] == ["current", "next"]
+
+
 async def expand_context() -> list[RetrievalHit]:
     service = ContextExpansionService(FakePostgresForExpansion())  # type: ignore[arg-type]
     request = QueryRequest(query="explain answer", repo_url="repo", branch="main", snapshot_id="snap")
@@ -117,6 +125,24 @@ async def retrieve_graph_hits() -> list[RetrievalHit]:
         request,
         understanding=type("Understanding", (), {"entities": ["InvoiceService"]})(),
     )
+
+
+async def orchestrate_stateful_retrieval():
+    orchestrator = RetrievalOrchestrator(
+        logging.getLogger(__name__),
+        FakeQueryUnderstanding(),
+        retrievers=[FakeRetriever()],
+        context_expansion=ContextExpansionService(FakePostgresForExpansion()),  # type: ignore[arg-type]
+    )
+    request = QueryRequest(query="explain answer", repo_url="repo", branch="main", snapshot_id="snap")
+
+    result = await orchestrator.retrieve(request)
+
+    assert len(orchestrator.chunks) == 1
+    assert [hit.chunk_id for hit in orchestrator.chunks[0]] == ["current"]
+    assert [hit.chunk_id for hit in orchestrator.fused_chunks] == ["current"]
+    assert [hit.chunk_id for hit in orchestrator.expanded_chunks] == ["current", "next"]
+    return result
 
 
 class FakeNeo4j:
@@ -147,5 +173,34 @@ class FakePostgres:
                 content="hydrated content",
                 score=0,
                 sources=[source],
+            )
+        ]
+
+
+class FakeQueryUnderstanding:
+    async def understand(self, query: str) -> QueryUnderstanding:
+        assert query == "explain answer"
+        return QueryUnderstanding(
+            intent="code_explanation",
+            entities=["answer"],
+            retrieval_plan=["fake"],
+        )
+
+
+class FakeRetriever:
+    name = "fake"
+
+    async def retrieve(self, request: QueryRequest, understanding: QueryUnderstanding) -> list[RetrievalHit]:
+        assert understanding.retrieval_plan == ["fake"]
+        return [
+            RetrievalHit(
+                chunk_id="current",
+                repo_url=request.repo_url,
+                branch=request.branch,
+                snapshot_id=request.snapshot_id,
+                content="current",
+                next_chunk_id="next",
+                score=0.9,
+                sources=[self.name],
             )
         ]
