@@ -18,7 +18,7 @@ class LLMAnsweringService:
 
         prompt = build_answer_prompt(context)
         try:
-            answer = await self.llm_client.complete(prompt)
+            completion = await self.llm_client.complete_with_usage(prompt)
         except LLMClientError as err:
             return AnswerResponse(
                 answer="I found relevant context, but the LLM answer request failed.",
@@ -28,7 +28,8 @@ class LLMAnsweringService:
             )
 
         return AnswerResponse(
-            answer=answer,
+            answer=completion.text,
             citations=citations_from_context(context.blocks),
             context_blocks=context.blocks,
+            token_usage=completion.token_usage,
         )

@@ -42,6 +42,7 @@ class ReasoningRAGStrategy(AnsweringStrategy):
         self.answering_service = LLMAnsweringService(self.llm_client)
       
     async def answer(self, request: AnswerRequest): 
+        self.llm_client.reset_token_usage()
         initial_query_understanding = await self.query_understanding.understand(request.query)
         subqueries = await self._generate_subqueries(request.query, initial_query_understanding)
 
@@ -59,7 +60,9 @@ class ReasoningRAGStrategy(AnsweringStrategy):
             hits=expanded_hits,
         )
         assembled_context = await self.context_assembly.assemble(request, retrieval_result)
-        return await self.answering_service.answer(assembled_context) 
+        response = await self.answering_service.answer(assembled_context)
+        response.token_usage = self.llm_client.token_usage_snapshot()
+        return response
 
     
     async def _generate_subqueries(

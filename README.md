@@ -24,6 +24,7 @@ services/
   chunking-service/      Go service for Tree-sitter extraction and chunk creation
   indexing-service/      Go service for text, vector, and graph indexing
   query-service/         Python service for retrieval, context assembly, and answers
+  answer-eval-service/   Python runner for comparing answer strategies
   shared/                Shared Go domain, Kafka, Postgres, blob store, utilities
 
 docker-compose.yml       Local infrastructure and service orchestration
@@ -46,6 +47,7 @@ The root `docker-compose.yml` starts:
 | Pinecone Local | Vector index | `http://localhost:5081` |
 | repo-sync API | Repo lifecycle API | `http://localhost:8081` |
 | query service | Retrieval and answer API | `http://localhost:8082` |
+| answer eval service | One-shot answer strategy evaluation runner | `docker compose --profile eval run --rm answer-eval-service` |
 
 Default local credentials:
 
@@ -119,6 +121,14 @@ curl -X POST http://localhost:8082/answer \
     "context_token_budget": 12000
   }'
 ```
+
+Compare answer strategies:
+
+```bash
+docker compose --profile eval run --rm answer-eval-service
+```
+
+The evaluation runner calls `/answer` for the default C++ question set across `baseline`, `reasoning`, and `agentic`, then writes CSV metrics, raw JSONL responses, and matplotlib PNG plots under `eval-results/`, including aggregate per-answer token usage charts.
 
 ## End-To-End Data Flow
 
@@ -544,6 +554,16 @@ sources
 ### Answer Generation
 
 `LLMAnsweringService` uses assembled context to call the configured OpenAI answer model.
+
+`/answer` responses include `token_usage`:
+
+```text
+input_tokens
+output_tokens
+total_tokens
+```
+
+For strategy modes, `token_usage` is aggregated across the full answer request, including query-understanding, planning, and final-answer LLM calls.
 
 Default answer configuration:
 

@@ -1,0 +1,34 @@
+[
+  {
+    "id": "q1_direct_lookup",
+    "query": "Where is `main` defined?"
+  },
+  {
+    "id": "q2_definition_usage",
+    "query": "Where is `ConnectionPool` defined, and where is it used?"
+  },
+  {
+    "id": "q3_build_targets",
+    "query": "Which CMake targets are built, and what source files belong to each target?"
+  },
+  {
+    "id": "q4_request_flow",
+    "query": "How does a request flow from socket read to response write?"
+  },
+  {
+    "id": "q5_shutdown",
+    "query": "How does the project stop background threads during shutdown?"
+  },
+  {
+    "id": "q6_deadlock",
+    "query": "What could cause a deadlock in the worker thread pool?"
+  },
+  {
+    "id": "q7_ownership",
+    "query": "Find uses of `std::unique_ptr` and explain ownership flow."
+  },
+  {
+    "id": "q8_errors",
+    "query": "How are errors propagated across service layers?"
+  }
+]
