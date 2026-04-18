@@ -10,3 +10,12 @@ dist/
 coverage.out
 .gocache/
 services/*/tmp/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+
+# Build and tool caches
+cache/
+.cache/

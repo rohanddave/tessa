@@ -47,6 +47,7 @@ The root `docker-compose.yml` starts:
 | Pinecone Local | Vector index | `http://localhost:5081` |
 | repo-sync API | Repo lifecycle API | `http://localhost:8081` |
 | query service | Retrieval and answer API | `http://localhost:8082` |
+| web UI | Forms for answer and repo event requests | `http://localhost:3000` |
 | answer eval service | One-shot answer strategy evaluation runner | `docker compose --profile eval run --rm answer-eval-service` |
 
 Default local credentials:
@@ -121,6 +122,23 @@ curl -X POST http://localhost:8082/answer \
     "context_token_budget": 12000
   }'
 ```
+
+Run the web UI:
+
+```bash
+cd apps/web
+npm install
+npm run dev
+```
+
+The UI proxies requests to the local service defaults:
+
+```text
+QUERY_SERVICE_URL=http://localhost:8082
+REPO_SYNC_SERVICE_URL=http://localhost:8081
+```
+
+Use `/answer` for answer requests and `/repo-event` for repository events.
 
 Compare answer strategies:
 
