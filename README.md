@@ -1,503 +1,683 @@
 # tessa-rag
 
-This repository is a multi-service workspace with one root Docker Compose stack and shared local infrastructure. The first service in the repo is `repo-sync-service`, a Go service that accepts repo lifecycle events, publishes them to Kafka, and processes them through a decoupled consumer.
+Tessa RAG is a local multi-service code retrieval system. It ingests repositories, chunks source files with Tree-sitter, indexes chunks into text, vector, and graph stores, and serves retrieval/answering requests through a Python query service.
 
-## Current project state
+The project is designed around one root Docker Compose stack and a shared event-driven pipeline:
 
-The currently implemented end-to-end ingestion/indexing slice is:
+```text
+repo event
+  -> repo-sync-service
+  -> MinIO + Postgres snapshot
+  -> chunking-service
+  -> Postgres chunks + Kafka indexing events
+  -> indexing-service
+  -> Elasticsearch + Pinecone local index + Neo4j
+  -> query-service
+  -> retrieval, fusion, context assembly, answer generation
+```
 
-1. An HTTP client sends `POST /register-repo-event` to `repo-sync-service-api`.
-2. The API validates the request and converts it into a `RepoEvent`.
-3. The API publishes the event to Kafka and waits for delivery confirmation.
-4. `repo-sync-service-consumer` reads the event from Kafka.
-5. For `repo.created`, the consumer invokes `RegisterRepoService`.
-6. `RegisterRepoService` atomically marks the repo as `registering` through the repo registry in Postgres.
-7. The GitHub data source downloads the repository archive and streams files one by one.
-8. Files are uploaded to MinIO.
-9. A manifest is created and uploaded to MinIO.
-10. A snapshot record is stored in Postgres.
-11. The repo is marked `registered` in the Postgres-backed repo registry.
-12. The Kafka message is committed only after successful processing.
+## Repository Layout
 
-`repo.updated` and `repo.deleted` event routes also exist now. `repo.updated` has a working manifest-diff flow, while `repo.deleted` remains simpler and focused on cleanup.
+```text
+services/
+  repo-sync-service/     Go service for repo registration, update, deletion, snapshots
+  chunking-service/      Go service for Tree-sitter extraction and chunk creation
+  indexing-service/      Go service for text, vector, and graph indexing
+  query-service/         Python service for retrieval, context assembly, and answers
+  shared/                Shared Go domain, Kafka, Postgres, blob store, utilities
 
-## Repository layout
+docker-compose.yml       Local infrastructure and service orchestration
+README.md                Project overview
+```
 
-- `docker-compose.yml`: root orchestration for infrastructure and service containers
-- `services/repo-sync-service`: first application service, written in Go
-- `services/query-service`: Python query-time service for retrieval, context assembly, and LLM answering
+## Local Infrastructure
 
-## Shared local infrastructure
+The root `docker-compose.yml` starts:
 
-- Kafka: shared event bus for all services
-- Kafka UI: local Kafka inspection UI
-- MinIO: local S3-compatible object storage
-- Snapshot Store: shared PostgreSQL instance for repo state and snapshot metadata
+| Component | Purpose | Host |
+|---|---|---|
+| Kafka | Event bus | `localhost:19092` |
+| Kafka UI | Kafka inspection | `http://localhost:8080` |
+| MinIO | S3-compatible repo blob store | `http://localhost:9000` |
+| MinIO Console | Blob store UI | `http://localhost:9001` |
+| Postgres | Snapshot, registry, chunk metadata/content | `localhost:5432` |
+| Elasticsearch | Keyword/text index | `http://localhost:9200` |
+| Neo4j | Code relationship graph | `http://localhost:7474`, `bolt://localhost:7687` |
+| Pinecone Local | Vector index | `http://localhost:5081` |
+| repo-sync API | Repo lifecycle API | `http://localhost:8081` |
+| query service | Retrieval and answer API | `http://localhost:8082` |
 
-## Quick start
+Default local credentials:
+
+```text
+MinIO:
+  username: minioadmin
+  password: minioadmin
+
+Postgres:
+  database: snapshot_store
+  username: postgres
+  password: postgres
+
+Neo4j:
+  username: neo4j
+  password: password
+```
+
+## Quick Start
+
+Start the full stack:
 
 ```bash
 docker compose up --build
 ```
 
-Once the stack is up:
+Health checks:
 
-- `repo-sync-service-api` is available at `http://localhost:8081`
-- health check is at `http://localhost:8081/healthz`
-- `query-service` is available at `http://localhost:8082`
-- query service health check is at `http://localhost:8082/healthz`
-- Kafka UI is available at `http://localhost:8080`
-- MinIO API is available at `http://localhost:9000`
-- MinIO console is available at `http://localhost:9001`
-- Snapshot Store Postgres is available at `localhost:5432`
-
-Default local MinIO credentials:
-
-- username: `minioadmin`
-- password: `minioadmin`
-
-Default local Snapshot Store credentials:
-
-- database: `snapshot_store`
-- username: `postgres`
-- password: `postgres`
-
-The `repo-sync` bucket is created automatically during startup.
-
-## Docker Compose stack
-
-The root [docker-compose.yml](/Users/rohandave/Documents/Projects/tessa-rag/docker-compose.yml) defines the shared runtime environment for the whole repo.
-
-### Kafka
-
-Kafka is the shared event bus. It runs in single-node KRaft mode with no ZooKeeper and is reachable:
-
-- inside Docker at `kafka:9092`
-- from the host at `localhost:19092`
-
-The current topic model used by `repo-sync-service` is:
-
-- `repo-sync.repo-lifecycle`
-  used for lifecycle-style events like `repo.created` and `repo.deleted`
-- `repo-sync.repo-events`
-  used for content/update-style events like `repo.updated`
-
-### Kafka UI
-
-Kafka UI is available at `http://localhost:8080` and points at `kafka:9092`.
-
-### MinIO
-
-MinIO provides the S3-compatible blob store used by `repo-sync-service`.
-
-Key details:
-
-- API endpoint: `http://localhost:9000`
-- console: `http://localhost:9001`
-- bucket used by the service: `repo-sync`
-
-### MinIO init job
-
-`minio-init` is a one-time setup container that waits for MinIO, creates the `repo-sync` bucket, and ensures it exists before the application containers start.
-
-### Snapshot Store
-
-`snapshot-store` is a shared PostgreSQL 16 instance.
-
-It currently stores:
-
-- repo registration state through the Postgres `RepoRegistryRepo`
-- snapshot metadata through the Postgres `SnapshotStoreRepo`
-
-### repo-sync-service-api
-
-This container runs the API binary built from `services/repo-sync-service`.
-
-It is responsible for:
-
-- accepting `RepoEvent` requests over HTTP
-- validating them
-- publishing them to Kafka
-
-### repo-sync-service-consumer
-
-This container runs the consumer binary built from the same Go service image.
-
-It is responsible for:
-
-- subscribing to Kafka topics
-- decoding Kafka messages into `RepoEvent`
-- running business workflows like repo registration
-- committing Kafka messages only after successful handling
-
-## repo-sync-service architecture
-
-The service is intentionally split into separate runtimes:
-
-```text
-services/repo-sync-service/
-  cmd/
-    api/
-      main.go
-    consumer/
-      main.go
-  internal/
-    config/
-    github/
-    http/
-    kafka/
-    minio/
-    postgres/
-    sync/
-    util/
+```bash
+curl http://localhost:8081/healthz
+curl http://localhost:8082/healthz
 ```
 
-### Runtime entrypoints
+Register a repository:
 
-- [cmd/api/main.go](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/cmd/api/main.go)
-  starts the HTTP API server
-- [cmd/consumer/main.go](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/cmd/consumer/main.go)
-  starts Kafka consumers and dispatches workflow handling
+```bash
+curl -X POST http://localhost:8081/register-repo-event \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "repo_url": "https://github.com/example/repo.git",
+    "provider": "github",
+    "branch": "main",
+    "event_type": "repo.created",
+    "requested_by": "local"
+  }'
+```
 
-### Internal packages
+Retrieve code context:
 
-- [internal/config](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/config)
-  loads environment configuration for Kafka, GitHub, Postgres, and MinIO
-- [internal/http](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/http)
-  HTTP routes and request handling
-- [internal/kafka](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/kafka)
-  Kafka producer/consumer adapter layer
-- [internal/github](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/github)
-  GitHub-backed repo data source implementation
-- [internal/minio](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/minio)
-  MinIO-backed blob store implementation
-- [internal/postgres](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/postgres)
-  Postgres-backed snapshot store and repo registry implementations
-- [internal/sync/domain](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/sync/domain)
-  domain models like `Manifest` and `Snapshot`
-- [internal/sync/ports](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/sync/ports)
-  outbound interfaces for data source, blob store, snapshot store, and repo registry
-- [internal/sync/service](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/sync/service)
-  business workflows like repo registration, repo update, and deletion
-- [internal/util](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/util)
-  small shared helpers like env loading and content hashing
+```bash
+curl -X POST http://localhost:8082/retrieve \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query": "where is InvoiceService used?",
+    "repo_url": "https://github.com/example/repo.git",
+    "branch": "main",
+    "top_k": 8
+  }'
+```
 
-## API flow
+Ask for an answer:
 
-The main API endpoint is:
+```bash
+curl -X POST http://localhost:8082/answer \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query": "explain the invoice creation flow",
+    "repo_url": "https://github.com/example/repo.git",
+    "branch": "main",
+    "top_k": 8,
+    "context_token_budget": 12000
+  }'
+```
 
-- `POST /register-repo-event`
+## End-To-End Data Flow
 
-Example request:
+### 1. Repo Sync
+
+`repo-sync-service` accepts repo lifecycle events through `POST /register-repo-event`.
+
+Supported event types:
+
+```text
+repo.created
+repo.updated
+repo.deleted
+```
+
+For `repo.created`, the service:
+
+1. Validates and publishes the event to Kafka.
+2. Streams the repository archive from GitHub.
+3. Uploads file blobs to MinIO.
+4. Builds and stores a manifest in MinIO.
+5. Stores a snapshot row in Postgres.
+6. Publishes a snapshot-created event.
+
+For `repo.updated`, it compares the new archive against the previous manifest and creates a new snapshot with changed/deleted file handling.
+
+For `repo.deleted`, it removes stored repo state and blobs.
+
+### 2. Chunking
+
+`chunking-service` consumes snapshot events, loads files from MinIO, parses code with Tree-sitter, and writes chunks to Postgres.
+
+Each chunk contains:
+
+```text
+chunk_id
+repo_url
+branch
+commit_sha
+snapshot_id
+file_path
+language
+content
+content_hash
+symbol_name
+symbol_type
+start_line / end_line
+start_char / end_char
+prev_chunk_id / next_chunk_id
+indexing statuses
+created_at
+```
+
+Supported parser languages:
+
+```text
+Go
+Java
+JavaScript
+TypeScript
+Python
+C/C++
+```
+
+The current chunk symbol types include:
+
+```text
+file
+doc_comment
+import
+class
+method
+module
+symbol:class
+symbol:method
+symbol:module
+container:class
+container:method
+```
+
+`symbol:*` and `container:*` types are normalized by graph indexing into canonical types such as `class`, `method`, and `module`.
+
+### 3. Indexing
+
+`indexing-service` consumes chunk indexing events and indexes each chunk into three retrieval backends:
+
+| Backend | Purpose |
+|---|---|
+| Elasticsearch | Keyword and lexical search over chunk content and metadata |
+| Pinecone Local | Vector search using OpenAI embeddings |
+| Neo4j | Chunk-level code relationship graph |
+
+Indexing is per chunk and idempotent. The indexing service marks per-backend status in Postgres:
+
+```text
+elasticsearch_status
+pinecone_status
+neo4j_status
+```
+
+## Neo4j Knowledge Graph
+
+The graph is chunk-centric: every graph vertex is a `:Chunk`.
+
+Real code chunks and synthetic file chunks share the same label:
+
+```text
+(:Chunk {symbol_type: "file", synthetic: true})
+(:Chunk {symbol_type: "class", synthetic: false})
+(:Chunk {symbol_type: "method", synthetic: false})
+(:Chunk {symbol_type: "import", synthetic: false})
+```
+
+All graph nodes are scoped by repository/snapshot metadata:
+
+```text
+repo_url
+branch
+commit_sha
+snapshot_id
+file_path
+```
+
+Current graph relationships:
+
+| Relationship | Meaning |
+|---|---|
+| `CONTAINS` | File contains chunk, or class contains method |
+| `PREV` / `NEXT` | Linear chunk neighbors |
+| `HAS_IMPORT` | File has import chunk |
+| `RESOLVES_TO_FILE` | Import resolves to a synthetic file chunk when possible |
+| `DOCUMENTS` | Doc comment documents nearest declaration |
+| `ALIAS_OF` | Duplicate symbol/container chunks represent same declaration range |
+
+The graph indexer creates placeholder nodes for prev/next links if neighbors arrive later, then hydrates those nodes when their chunk event is indexed.
+
+Useful Neo4j checks:
+
+```cypher
+MATCH (c:Chunk)
+RETURN count(c) AS chunks;
+```
+
+```cypher
+MATCH ()-[r]->()
+RETURN type(r) AS relationship, count(*) AS count
+ORDER BY count DESC;
+```
+
+```cypher
+MATCH (c:Chunk)
+RETURN c.repo_url, c.snapshot_id, c.symbol_type, count(*) AS chunks
+ORDER BY chunks DESC;
+```
+
+```cypher
+MATCH p = (:Chunk)-[:CONTAINS|PREV|NEXT|HAS_IMPORT|RESOLVES_TO_FILE|DOCUMENTS|ALIAS_OF]->(:Chunk)
+RETURN p
+LIMIT 50;
+```
+
+## Query Service
+
+`query-service` is the Python query-time API. It owns:
+
+1. Query understanding
+2. Retrieval orchestration
+3. Retriever execution
+4. Fusion
+5. Context expansion
+6. Context assembly and budget management
+7. LLM answer generation
+
+Endpoints:
+
+```text
+GET  /healthz
+POST /retrieve
+POST /answer
+```
+
+### Request Model
+
+`/retrieve` and `/answer` accept a request shaped like:
 
 ```json
 {
+  "query": "where is InvoiceService used?",
   "repo_url": "https://github.com/example/repo.git",
-  "provider": "github",
   "branch": "main",
-  "event_type": "repo.created",
-  "requested_by": "tessa-user"
+  "snapshot_id": "optional-specific-snapshot",
+  "top_k": 8,
+  "context_token_budget": 12000
 }
 ```
 
-Validation rules:
+`repo_url` and `snapshot_id` are optional, but using them makes retrieval much more precise. `branch` defaults to `main`.
 
-- `repo_url` is required
-- `provider` must be one of `github`, `gitlab`, or `bitbucket`
-- `event_type` must be one of `repo.created`, `repo.updated`, or `repo.deleted`
-- `requested_by` is required
-- `branch` defaults to `main`
+### Query Understanding
 
-What happens inside the API:
+`QueryUnderstandingService` extracts:
 
-1. The request is decoded into `RepoEventRequest`.
-2. Validation is performed.
-3. A `RepoEvent` is built.
-4. The Kafka producer routes the event:
-   - `repo.created` and `repo.deleted` -> lifecycle topic
-   - `repo.updated` -> events topic
-5. The producer waits for Kafka delivery confirmation.
-6. On success, the API returns `202 Accepted` with the event payload.
+```text
+intent
+entities
+retrieval_plan
+```
 
-## Kafka consumer flow
+Entities include backticked symbols and file-like paths. When entities or dependency-style words are present, graph retrieval is included in the retrieval plan.
 
-The Kafka consumer layer uses an internal wrapper message type so the consumer runtime can commit Kafka offsets without leaking Confluent Kafka types into the service layer.
+Default plan:
 
-Current behavior:
+```text
+keyword + vector
+```
 
-- Kafka auto-commit is disabled
-- the consumer reads a wrapped message
-- the wrapped message exposes only the decoded `RepoEvent`
-- the business handler runs
-- if handling succeeds, the consumer commits the Kafka message
-- if handling fails, the message is not committed
+Graph-aware plan:
 
-This keeps Kafka details inside [internal/kafka](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/kafka).
+```text
+keyword + vector + graph
+```
 
-## `repo.created` registration flow
+### Retriever Backends
 
-The `repo.created` handling path is the most complete business workflow in the project right now.
+The query service has three retrievers:
 
-### Step 1: state transition
+| Retriever | Backend | Role |
+|---|---|---|
+| `KeywordRetriever` | Elasticsearch | Lexical search over content, file paths, symbols, language |
+| `VectorRetriever` | OpenAI embeddings + Pinecone Local | Semantic search |
+| `GraphRetriever` | Neo4j + Postgres | Code relationship traversal and chunk hydration |
 
-`RegisterRepoService` calls the Postgres-backed repo registry:
+### Keyword Retrieval
 
-- `TryStartRegistration(repoURL, branch, commitSHA)`
+Keyword retrieval queries Elasticsearch with a multi-match query over:
 
-This is implemented as an atomic SQL transition, not an in-memory mutex. It succeeds only if the repo is eligible to enter the `registering` state.
+```text
+content
+symbol_name
+file_path
+symbol_type
+language
+```
 
-### Step 2: repo archive streaming
+It applies request scope filters for:
 
-The GitHub data source implementation:
+```text
+repo_url
+branch
+snapshot_id
+```
 
-- parses the GitHub repo URL
-- downloads the GitHub tar archive for the requested branch/ref
-- unwraps the archive stream internally
-- exposes repo files one at a time through the `DataSourceRepo` port
+### Vector Retrieval
 
-The service does not parse tar directly. It consumes file-level records through the `RepoFileStream` abstraction.
+Vector retrieval:
 
-### Step 3: worker pipeline
+1. Embeds the user query with OpenAI.
+2. Queries Pinecone Local.
+3. Requests metadata in the vector result.
+4. Maps returned metadata into `RetrievalHit`.
 
-`RegisterRepoService`:
+Vector filters use the same request scope:
 
-- reads files from the data source stream
-- buffers them into file jobs
-- fans those jobs out to worker goroutines
-- hashes file contents
-- uploads files to MinIO through `BlobStoreRepo`
-- appends manifest entries under a mutex
+```text
+repo_url
+branch
+snapshot_id
+```
 
-### Step 4: manifest creation
+### Graph Retrieval
 
-After all workers complete:
+Graph retrieval is split into two steps:
 
-- the manifest is marshaled to JSON
-- the manifest is stored in MinIO as `manifest.json` under the repo prefix
+```text
+Neo4j discovers relevant chunk IDs and graph scores.
+Postgres hydrates those chunk IDs into full chunk content/metadata.
+```
 
-### Step 5: snapshot persistence
+Neo4j is used for traversal because it knows relationships such as:
 
-Then the service stores a `Snapshot` row in Postgres using `SnapshotStoreRepo`.
+```text
+CONTAINS
+PREV
+NEXT
+HAS_IMPORT
+RESOLVES_TO_FILE
+DOCUMENTS
+ALIAS_OF
+```
 
-The snapshot currently records:
+Postgres is used for hydration because it is the source of truth for chunk content.
 
-- repo URL
-- branch
-- commit SHA
-- manifest URL
+Graph retrieval scores come from Neo4j traversal logic. Postgres `mget_chunks` returns chunks by ID and does not calculate relevance. ID lookup is treated as hydration, not search.
 
-### Step 6: final state transition
+### Fusion
 
-Finally, the repo registry marks the repo as:
+`FusionRanker` combines retriever outputs with reciprocal-rank-style scoring:
 
-- `registered`
+```text
+score contribution = 1 / (60 + rank)
+```
 
-Only after that does the consumer commit the Kafka message.
+When multiple retrievers return the same `chunk_id`, fusion:
 
-## `repo.updated` update flow
+1. Merges source labels.
+2. Keeps the maximum retriever score.
+3. Fills missing metadata/content from later duplicate hits.
 
-`repo.updated` is now modeled as an incremental snapshot refresh for the single tracked branch of a repo.
+This matters because graph hits can arrive as metadata-only graph results first, then be hydrated by Postgres or duplicated by keyword/vector with full content.
 
-### Step 1: repo and branch eligibility
+### Context Expansion
 
-`RepoUpdateService` first checks the repo registry:
+Context expansion adds local neighboring chunks after fusion.
 
-- `TryUpdateRepo(repoURL, branch)`
+The expansion service:
 
-This ensures updates only proceed for repos that are already registered and only for the tracked branch stored in the repo registry.
+1. Reads `prev_chunk_id` and `next_chunk_id` from fused hits.
+2. Fetches those IDs from Postgres with `mget_chunks`.
+3. Filters neighbors to the request scope.
+4. Merges neighbors in a stable order:
 
-### Step 2: previous snapshot lookup
+```text
+prev -> current -> next
+```
 
-The update flow loads the latest snapshot for the repo from `SnapshotStoreRepo`.
+Like graph hydration, context expansion does not ask Postgres for a relevance score. The neighbor is included because the primary chunk was retrieved and the neighbor is structurally adjacent.
+
+### Context Assembly
+
+`ContextAssemblyService` converts retrieval hits into context blocks for answer generation.
+
+It:
+
+1. Deduplicates hits by `chunk_id`.
+2. Skips hits with empty content.
+3. Estimates tokens as `len(text) // 4`, minimum `1`.
+4. Adds blocks until `context_token_budget` is reached.
+5. Logs budget usage, skipped hits, and source counts.
 
-If there is no previous snapshot, the update is rejected because there is no baseline to diff against.
+The resulting `AssembledContext` contains:
 
-### Step 3: previous manifest load
-
-The service fetches the previous manifest from MinIO using the manifest URL stored in the previous snapshot.
-
-That manifest is unmarshaled and copied into a new in-memory working manifest for the new commit.
-
-### Step 4: archive streaming and file comparison
-
-The GitHub data source streams the new repo archive for the incoming commit.
-
-As files are streamed:
-
-- each file is hashed
-- the path is marked as seen for the current update run
-- if the previous hash for that path matches, the file is treated as unchanged
-- if the path is new or its hash changed, the blob is uploaded to MinIO and the manifest entry is updated
-
-### Step 5: deleted file detection
-
-After the stream finishes, any file path that existed in the previous manifest but was not seen in the new stream is removed from the working manifest.
-
-This is how deleted files are detected without requiring a second archive or a Git-specific diff API.
-
-### Step 6: new manifest and snapshot
-
-Once the diff is complete:
-
-- the new manifest is written to MinIO
-- a new snapshot row is created in Postgres
-
-### Step 7: registry update completion
-
-Finally, the repo registry calls:
-
-- `MarkUpdated(repoURL, commitSHA)`
-
-This moves the repo from `updating` back to `registered` and stores the latest commit SHA in the repo registry record.
-
-Only after that does the consumer commit the Kafka message.
-
-## Current storage adapters
-
-### Blob store
-
-The blob store is implemented by [internal/minio/blob_store_repo.go](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/minio/blob_store_repo.go).
-
-It currently supports:
-
-- `InsertFile`
-- `GetFile`
-- `RemoveFile`
-- `RemoveDirectory`
-
-`RemoveDirectory` deletes all objects under a prefix, which is intended for repo cleanup flows.
-
-### Snapshot store
-
-The snapshot store is implemented by [internal/postgres/snapshot_store_repo.go](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/postgres/snapshot_store_repo.go).
-
-It currently supports:
-
-- `CreateSnapshot`
-- `GetSnapshot`
-- `GetLatestSnapshot`
-- `DeleteSnapshotsByRepoURL`
-
-### Repo registry
-
-The repo registry is implemented by [internal/postgres/repo_registry_repo.go](/Users/rohandave/Documents/Projects/tessa-rag/services/repo-sync-service/internal/postgres/repo_registry_repo.go).
-
-It currently supports:
-
-- `TryStartRegistration`
-- `MarkRegistered`
-- `TryStartDeletion`
-- `MarkDeleted`
-- `TryUpdateRepo`
-- `MarkUpdated`
-
-These methods are implemented with atomic SQL transitions so they work across multiple service instances and containers.
-
-## Current dependencies
-
-The service currently uses:
-
-- `confluent-kafka-go/v2` for Kafka
-- `pgx/v5` and `pgxpool` for Postgres
-- `minio-go/v7` for blob storage
-
-## Environment configuration
-
-The service currently relies on these main env vars:
+```text
+repo_url
+branch
+snapshot_id
+query
+token_budget
+blocks[]
+```
+
+Each block includes:
+
+```text
+chunk_id
+file_path
+language
+symbol_name
+start_line
+end_line
+content
+score
+sources
+```
+
+### Answer Generation
+
+`LLMAnsweringService` uses assembled context to call the configured OpenAI answer model.
+
+Default answer configuration:
+
+```text
+OPENAI_ANSWER_MODEL=gpt-5.4-mini
+OPENAI_ANSWER_MAX_OUTPUT_TOKENS=1200
+OPENAI_TIMEOUT_SECONDS=60
+```
+
+### Query Service Storage Responsibilities
+
+| Store | Query-time responsibility |
+|---|---|
+| Elasticsearch | Keyword search |
+| Pinecone Local | Vector search |
+| Neo4j | Graph traversal and relationship-aware discovery |
+| Postgres | Chunk hydration and prev/next context expansion |
+| OpenAI | Query embeddings and final answer generation |
+
+## Observability
+
+The services log important pipeline stats.
+
+### Indexing Service Logs
+
+The Neo4j graph indexer logs:
+
+```text
+chunk_id
+repo_url
+branch
+snapshot_id
+file_path
+symbol_name
+symbol_type
+prev/next presence
+import candidate count
+nodes created/deleted
+relationships created/deleted
+properties set
+labels added
+duration_ms
+```
+
+### Query Service Logs
+
+The query service logs:
+
+```text
+retrieval start/end
+selected retrievers
+query intent
+entity count
+per-retriever hit counts
+per-retriever source counts
+fusion input/output counts
+context expansion neighbor counts
+context assembly block counts
+empty-content skips
+budget skips
+estimated budget used/remaining
+source counts
+duration_ms
+```
+
+The logs intentionally avoid dumping chunk content.
+
+## Environment Variables
+
+### Shared Postgres
+
+```text
+SNAPSHOT_STORE_HOST
+SNAPSHOT_STORE_PORT
+SNAPSHOT_STORE_DB
+SNAPSHOT_STORE_USER
+SNAPSHOT_STORE_PASSWORD
+SNAPSHOT_STORE_SSLMODE
+```
 
 ### Kafka
 
-- `KAFKA_BROKERS`
-- `KAFKA_EVENTS_TOPIC`
-- `KAFKA_LIFE_CYCLE_TOPIC`
+```text
+KAFKA_BROKERS
+KAFKA_EVENTS_TOPIC
+KAFKA_SNAPSHOTS_TOPIC
+KAFKA_INDEXING_TOPIC
+```
 
-### GitHub
+### MinIO / S3
 
-- `GITHUB_TOKEN`
+```text
+S3_ENDPOINT
+S3_REGION
+S3_BUCKET
+S3_ACCESS_KEY_ID
+S3_SECRET_ACCESS_KEY
+S3_USE_SSL
+```
 
-### Postgres
+### Elasticsearch
 
-- `SNAPSHOT_STORE_HOST`
-- `SNAPSHOT_STORE_PORT`
-- `SNAPSHOT_STORE_DB`
-- `SNAPSHOT_STORE_USER`
-- `SNAPSHOT_STORE_PASSWORD`
-- `SNAPSHOT_STORE_SSLMODE`
+```text
+ELASTICSEARCH_URL
+ELASTICSEARCH_INDEX
+```
 
-### MinIO
+### Pinecone Local
 
-- `S3_ENDPOINT`
-- `S3_REGION`
-- `S3_BUCKET`
-- `S3_ACCESS_KEY_ID`
-- `S3_SECRET_ACCESS_KEY`
-- `S3_USE_SSL`
+```text
+PINECONE_HOST
+PINECONE_API_KEY
+PINECONE_API_VERSION
+PINECONE_INDEX
+PINECONE_NAMESPACE
+```
 
-## Startup order
+### Neo4j
 
-When you run `docker compose up --build`:
+```text
+NEO4J_URI
+NEO4J_USER
+NEO4J_PASSWORD
+```
 
-1. Kafka starts and becomes healthy.
-2. MinIO starts.
-3. `minio-init` creates the `repo-sync` bucket.
-4. `snapshot-store` starts and initializes the shared Postgres database.
-5. `repo-sync-service-api` starts.
-6. `repo-sync-service-consumer` starts.
+### OpenAI
 
-## Future scope
+```text
+OPENAI_API_KEY
+OPENAI_BASE_URL
+OPENAI_EMBEDDING_MODEL
+OPENAI_EMBEDDING_DIMENSIONS
+OPENAI_ANSWER_MODEL
+OPENAI_ANSWER_MAX_OUTPUT_TOKENS
+OPENAI_TIMEOUT_SECONDS
+```
 
-There are a few known areas where the current implementation works functionally but should be improved for production resilience.
+## Development Commands
 
-### Bound memory usage for file jobs
+Run Go tests:
 
-The current registration and update pipelines read each streamed file fully into memory before it is handed to worker goroutines through `FileJob`.
+```bash
+cd services/chunking-service && go test ./...
+cd services/indexing-service && go test ./...
+cd services/repo-sync-service && go test ./...
+```
 
-Future work:
+Run query-service syntax check:
 
-- bound the `fileJobs` channel size
-- cap the maximum in-memory bytes allowed across queued jobs
-- consider spilling large files to temporary storage or streaming directly into blob-store uploads
+```bash
+cd services/query-service
+python -m compileall app tests
+```
 
-This will keep large repos from causing uncontrolled memory growth.
+Run query-service tests when dev dependencies are installed:
 
-### Make concurrency configurable
+```bash
+cd services/query-service
+python -m pytest -q
+```
 
-The current worker counts are hard-coded in the services and consumer runtime.
+Inspect Postgres chunk indexing status:
 
-Future work:
+```sql
+SELECT
+  elasticsearch_status,
+  pinecone_status,
+  neo4j_status,
+  count(*)
+FROM chunks
+GROUP BY elasticsearch_status, pinecone_status, neo4j_status;
+```
 
-- expose worker counts through environment variables
-- separately tune:
-  - Kafka consumer goroutine count
-  - registration file worker count
-  - update file worker count
+Inspect Neo4j graph:
 
-This will make the service easier to tune for local development versus larger deployments.
+```bash
+docker exec -it tessa-neo4j cypher-shell -u neo4j -p password
+```
 
-### Support explicit skip-but-commit consumer outcomes
+Then:
 
-Right now the consumer commits Kafka messages only after a handler returns success, and leaves messages uncommitted on error.
+```cypher
+MATCH (c:Chunk)
+RETURN c.symbol_type, count(*) AS count
+ORDER BY count DESC;
+```
 
-There are cases where a consumer may intentionally not perform the full business workflow but should still commit the message, for example:
+## Known Notes
 
-- duplicate or already-applied updates
-- events for untracked branches
-- events that are valid but intentionally no-op
-
-Future work:
-
-- model handler outcomes more explicitly than just `error` or `nil`
-- support outcomes like:
-  - processed and commit
-  - skipped and commit
-  - retry later and do not commit
-  - dead-letter then commit
-
-That will make consumer behavior more precise and prevent retry loops for events that should be safely acknowledged.
-7. Kafka UI starts and connects to Kafka.
-
-## Notes
-
-- The codebase is still evolving quickly, so some flows are more complete than others.
-- `repo.created` is the primary path that has been wired through the current architecture.
-- The README is meant to describe the current implementation, not a final target architecture.
+- Graph retrieval depends on Neo4j graph nodes being indexed and Postgres chunks being present.
+- Graph hydration and context expansion use Postgres by chunk ID and therefore do not calculate relevance scores.
+- Elasticsearch remains the keyword backend, but it is no longer used for graph hydration or prev/next context expansion.
+- Pinecone Local expects the configured embedding dimension, currently `1536`.
+- The query service requires `neo4j` and `asyncpg` Python dependencies for live graph/Postgres retrieval.
+- `pytest` is listed as a dev dependency for query-service tests.
