@@ -1,4 +1,4 @@
-import { forwardJson } from "../_proxy";
+import { forwardJson } from "@/lib/proxy";
 
 const queryServiceUrl =
   process.env.QUERY_SERVICE_URL?.replace(/\/$/, "") ?? "http://localhost:8082";

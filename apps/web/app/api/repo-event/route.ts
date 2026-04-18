@@ -1,4 +1,4 @@
-import { forwardJson } from "../_proxy";
+import { forwardJson } from "@/lib/proxy";
 
 const repoSyncServiceUrl =
   process.env.REPO_SYNC_SERVICE_URL?.replace(/\/$/, "") ??
