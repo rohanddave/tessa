@@ -17,13 +17,13 @@ class RetrievalOrchestrator:
     def __init__(
         self,
         logger: logging.Logger,
-        query_understanding: QueryUnderstandingService | None = None,
+        query_understanding: QueryUnderstandingService, 
         retrievers: list[Retriever] | None = None,
         fusion_ranker: FusionRanker | None = None,
         context_expansion: ContextExpansionService | None = None,
     ) -> None:
         self.logger = logger
-        self.query_understanding = query_understanding or QueryUnderstandingService()
+        self.query_understanding = query_understanding
         self.retrievers = retrievers or []
         self.fusion_ranker = fusion_ranker or FusionRanker()
         if context_expansion is None:
@@ -32,7 +32,7 @@ class RetrievalOrchestrator:
 
     async def retrieve(self, request: QueryRequest) -> RetrievalResult:
         started = time.monotonic()
-        understanding = self.query_understanding.understand(request.query)
+        understanding = await self.query_understanding.understand(request.query)
         selected = [r for r in self.retrievers if r.name in understanding.retrieval_plan]
 
         self.logger.info(

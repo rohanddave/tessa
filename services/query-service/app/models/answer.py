@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import Enum
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -7,9 +8,14 @@ from pydantic import BaseModel, Field
 from app.models.context import ContextBlock
 from app.models.query import QueryRequest
 
+class Mode(str, Enum): 
+    BASELINE = 'baseline'
+    REASONING = 'reasoning'
+    AGENTIC = 'agentic'
 
 class AnswerRequest(QueryRequest):
     stream: bool = False
+    mode: Mode = Mode.BASELINE 
 
 
 class Citation(BaseModel):
