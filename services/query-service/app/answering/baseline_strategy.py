@@ -35,9 +35,13 @@ class BaselineRAGStrategy(AnsweringStrategy):
             context_expansion=ContextExpansionService(postgres, logger),
         )
         self.context_assembly = ContextAssemblyService(logger)
-        self.answering_service = LLMAnsweringService(LLMClient(settings))
+        self.llm_client = LLMClient(settings)
+        self.answering_service = LLMAnsweringService(self.llm_client)
       
     async def answer(self, request: AnswerRequest) -> AnswerResponse:
+        self.llm_client.reset_token_usage()
         retrieval_result = await self.retrieval.retrieve(request)
         assembled_context = await self.context_assembly.assemble(request, retrieval_result)
-        return await self.answering_service.answer(assembled_context) 
+        response = await self.answering_service.answer(assembled_context)
+        response.token_usage = self.llm_client.token_usage_snapshot()
+        return response

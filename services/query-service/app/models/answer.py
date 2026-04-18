@@ -25,8 +25,15 @@ class Citation(BaseModel):
     end_line: Optional[int] = None
 
 
+class TokenUsage(BaseModel):
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+
+
 class AnswerResponse(BaseModel):
     answer: str
     citations: List[Citation] = Field(default_factory=list)
     context_blocks: List[ContextBlock] = Field(default_factory=list)
     limitations: List[str] = Field(default_factory=list)
+    token_usage: TokenUsage = Field(default_factory=TokenUsage)

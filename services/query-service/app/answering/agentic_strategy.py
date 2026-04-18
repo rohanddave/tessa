@@ -63,6 +63,7 @@ class AgenticRAGStrategy(AnsweringStrategy):
         self.answering_service = LLMAnsweringService(self.llm_client)
 
     async def answer(self, request: AnswerRequest) -> AnswerResponse:
+        self.llm_client.reset_token_usage()
         original_understanding = await self.query_understanding.understand(request.query)
         observations: list[str] = []
         used_subqueries: set[str] = set()
@@ -104,7 +105,9 @@ class AgenticRAGStrategy(AnsweringStrategy):
             hits=expanded_hits,
         )
         assembled_context = await self.context_assembly.assemble(request, retrieval_result)
-        return await self.answering_service.answer(assembled_context)
+        response = await self.answering_service.answer(assembled_context)
+        response.token_usage = self.llm_client.token_usage_snapshot()
+        return response
 
     async def _generate_next_step(
         self,

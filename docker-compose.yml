@@ -357,6 +357,32 @@ services:
     ports:
       - "8082:8082"
 
+  answer-eval-service:
+    image: answer-eval-service:local
+    build:
+      context: ./services
+      dockerfile: answer-eval-service/Dockerfile
+    container_name: answer-eval-service
+    profiles: ["eval"]
+    depends_on:
+      query-service:
+        condition: service_started
+    environment:
+      QUERY_SERVICE_URL: http://query-service:8082
+      EVAL_QUESTIONS_FILE: questions/cpp-small.json
+      EVAL_OUTPUT_DIR: /app/results
+      EVAL_MODES: baseline,reasoning,agentic
+      EVAL_REPEATS: "1"
+      EVAL_BRANCH: main
+      EVAL_TOP_K: "8"
+      EVAL_CONTEXT_TOKEN_BUDGET: "12000"
+      EVAL_TIMEOUT_SECONDS: "180"
+      EVAL_PLOTS: "true"
+    volumes:
+      - ./eval-results:/app/results
+    networks:
+      - tessa-net
+
 networks:
   tessa-net:
     driver: bridge
