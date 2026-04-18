@@ -284,13 +284,14 @@ LIMIT 50;
 
 `query-service` is the Python query-time API. It owns:
 
-1. Query understanding
-2. Retrieval orchestration
-3. Retriever execution
-4. Fusion
-5. Context expansion
-6. Context assembly and budget management
-7. LLM answer generation
+1. Answer strategy selection
+2. Query understanding when the selected strategy needs it
+3. Retrieval orchestration
+4. Retriever execution
+5. Fusion
+6. Context expansion
+7. Context assembly and budget management
+8. LLM answer generation
 
 Endpoints:
 
@@ -311,11 +312,68 @@ POST /answer
   "branch": "main",
   "snapshot_id": "optional-specific-snapshot",
   "top_k": 8,
-  "context_token_budget": 12000
+  "context_token_budget": 12000,
+  "mode": "baseline"
 }
 ```
 
 `repo_url` and `snapshot_id` are optional, but using them makes retrieval much more precise. `branch` defaults to `main`.
+
+`mode` is used by `/answer` and defaults to `baseline`. Supported answer modes are:
+
+```text
+baseline
+reasoning
+agentic
+```
+
+`/retrieve` ignores `mode` and runs the retrieval orchestrator directly.
+
+### Answer Strategies
+
+The query service supports three answer strategies. They differ in how much reasoning happens before and between retrieval calls.
+
+#### Baseline
+
+Baseline is the direct path.
+
+```text
+original query -> retrieve -> answer
+```
+
+It does not run LLM query understanding or subquery planning. The original query is passed directly into retrieval, then the retrieved context is assembled and answered.
+
+#### Reasoning
+
+Reasoning does one planning pass before retrieval.
+
+```text
+original query understanding
+-> subquery generation
+-> per-subquery retrieval planning
+-> retrieve
+-> fuse
+-> answer
+```
+
+It first understands the original query, generates a bounded list of retrieval-focused subqueries, creates a retrieval plan for each subquery, retrieves chunks for those subqueries, fuses the combined results, expands context, and answers from the assembled context.
+
+#### Agentic
+
+Agentic plans retrieval step by step.
+
+```text
+original query understanding
+-> iterative next-step subquery generation
+-> per-step retrieval planning
+-> retrieve
+-> observe
+-> repeat
+-> fuse
+-> answer
+```
+
+It starts with the original query understanding, asks for one next retrieval step at a time, retrieves with that step's retrieval plan, summarizes the observed hits, and feeds those observations into the next planning step. The loop stops when the planner decides enough context has been observed or the step limit is reached.
 
 ### Query Understanding
 
